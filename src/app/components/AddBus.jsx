@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { db } from "@/lib/firebase";
 import {
 	collection,
@@ -13,15 +13,14 @@ import {
 	updateDoc,
 	arrayUnion,
 } from "firebase/firestore";
+import mapboxgl from "mapbox-gl";
 
-const AddBus = () => {
+const AddBus = ({ onSuccess }) => {
 	// Form state
 	const [busNo, setBusNo] = useState("");
 	const [busName, setBusName] = useState("");
 	const [driverName, setDriverName] = useState("");
 	const [capacity, setCapacity] = useState("");
-	const [startTime, setStartTime] = useState("");
-	const [endTime, setEndTime] = useState("");
 	const [returnJourneyEnabled, setReturnJourneyEnabled] = useState(false);
 	const [returnStartTime, setReturnStartTime] = useState("");
 
@@ -33,6 +32,11 @@ const AddBus = () => {
 	const [selectedStop, setSelectedStop] = useState(null);
 	const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
+	// Map state
+	const [showMapModal, setShowMapModal] = useState(false);
+	const [mapClickLocation, setMapClickLocation] = useState(null);
+	const [isAddingFromMap, setIsAddingFromMap] = useState(false);
+
 	// Form submission state
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState("");
@@ -40,6 +44,12 @@ const AddBus = () => {
 
 	// User state
 	const [currentUser, setCurrentUser] = useState(null);
+
+	// Map references
+	const mapContainer = useRef(null);
+	const mapRef = useRef(null);
+	const markersRef = useRef([]);
+	const routeLineRef = useRef(null);
 
 	// Load current user
 	useEffect(() => {
@@ -91,16 +101,304 @@ const AddBus = () => {
 			} finally {
 				setLoadingSuggestions(false);
 			}
-		}, 300); // Debounce API calls
+		}, 300);
 
 		return () => clearTimeout(timeoutId);
 	}, [stopPlace]);
+
+	// Initialize Map
+	useEffect(() => {
+		if (!showMapModal || !mapContainer.current) return;
+
+		// Clean up existing map
+		if (mapRef.current) {
+			mapRef.current.remove();
+		}
+
+		mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+		if (!mapboxgl.accessToken) {
+			setError("Mapbox token not configured");
+			return;
+		}
+
+		// Initialize map
+		const center =
+			stops.length > 0 && stops[0].lat && stops[0].lng
+				? [stops[0].lng, stops[0].lat]
+				: [77.209, 28.6139]; // Default to Delhi
+
+		mapRef.current = new mapboxgl.Map({
+			container: mapContainer.current,
+			style: "mapbox://styles/mapbox/streets-v11",
+			center,
+			zoom: 12,
+		});
+
+		mapRef.current.on("load", () => {
+			updateMapWithStops();
+			// Add click handler for adding stops from map
+			mapRef.current.on("click", handleMapClick);
+		});
+
+		return () => {
+			if (mapRef.current) {
+				mapRef.current.off("click", handleMapClick);
+				mapRef.current.remove();
+				mapRef.current = null;
+			}
+		};
+	}, [showMapModal]);
+
+	// Update map when stops change
+	useEffect(() => {
+		if (mapRef.current && mapRef.current.loaded()) {
+			updateMapWithStops();
+		}
+	}, [stops]);
+
+	const updateMapWithStops = async () => {
+		if (!mapRef.current) return;
+
+		// Clear existing markers
+		markersRef.current.forEach((marker) => marker.remove());
+		markersRef.current = [];
+
+		// Remove existing route line
+		if (routeLineRef.current) {
+			if (mapRef.current.getLayer("route")) {
+				mapRef.current.removeLayer("route");
+			}
+			if (mapRef.current.getSource("route")) {
+				mapRef.current.removeSource("route");
+			}
+			routeLineRef.current = null;
+		}
+
+		const validStops = stops.filter((stop) => stop.lat && stop.lng);
+
+		// Add stop markers
+		validStops.forEach((stop, index) => {
+			const marker = new mapboxgl.Marker({
+				color:
+					index === 0
+						? "#10B981"
+						: index === validStops.length - 1
+						? "#EF4444"
+						: "#3B82F6",
+				scale: 0.8,
+			})
+				.setLngLat([stop.lng, stop.lat])
+				.setPopup(
+					new mapboxgl.Popup().setHTML(`
+						<div class="p-2">
+							<strong>Stop ${stop.stopNo}: ${stop.stopName}</strong><br/>
+							<small>Time: ${stop.stopTime}</small><br/>
+							<small class="text-gray-500">${
+								index === 0
+									? "Start"
+									: index === validStops.length - 1
+									? "End"
+									: "Stop"
+							}</small>
+						</div>
+					`)
+				)
+				.addTo(mapRef.current);
+
+			markersRef.current.push(marker);
+		});
+
+		// Add route line connecting stops
+		if (validStops.length > 1) {
+			let routeFeature = null;
+			try {
+				routeFeature = await fetchDirectionsRoute(validStops);
+			} catch (e) {
+				console.error("Directions API failed, falling back to straight line:", e);
+			}
+
+			// Fallback to straight line if routing unavailable
+			if (!routeFeature) {
+				routeFeature = {
+					type: "Feature",
+					properties: {},
+					geometry: {
+						type: "LineString",
+						coordinates: validStops.map((stop) => [stop.lng, stop.lat]),
+					},
+				};
+			}
+
+			mapRef.current.addSource("route", {
+				type: "geojson",
+				data: routeFeature,
+			});
+
+			mapRef.current.addLayer({
+				id: "route",
+				type: "line",
+				source: "route",
+				layout: { "line-join": "round", "line-cap": "round" },
+				paint: {
+					"line-color": "#3B82F6",
+					"line-width": 3,
+					"line-opacity": 0.8,
+				},
+			});
+
+			routeLineRef.current = true;
+
+			// Fit map to show the route
+			try {
+				const coords =
+					routeFeature.geometry.type === "LineString"
+						? routeFeature.geometry.coordinates
+						: [];
+				if (coords.length > 0) {
+					const bounds = new mapboxgl.LngLatBounds();
+					coords.forEach((c) => bounds.extend(c));
+					mapRef.current.fitBounds(bounds, { padding: 50 });
+				}
+			} catch (_) {
+				// ignore fit errors
+			}
+		}
+	};
+
+	const fetchDirectionsRoute = async (orderedStops) => {
+		const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+		if (!token) return null;
+		const coords = orderedStops
+			.filter((s) => s.lng && s.lat)
+			.map((s) => `${s.lng},${s.lat}`)
+			.join(";");
+		if (!coords || coords.split(";").length < 2) return null;
+
+		const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full&access_token=${token}`;
+		const res = await fetch(url);
+		if (!res.ok) return null;
+		const data = await res.json();
+		if (!data || !data.routes || data.routes.length === 0) return null;
+		const geometry = data.routes[0].geometry; // GeoJSON LineString
+		if (!geometry || geometry.type !== "LineString") return null;
+		return {
+			type: "Feature",
+			properties: {},
+			geometry,
+		};
+	};
+
+	const handleMapClick = async (e) => {
+		if (!isAddingFromMap) return;
+
+		const { lng, lat } = e.lngLat;
+		setMapClickLocation({ lat, lng });
+
+		// Reverse geocode to get place name
+		try {
+			const response = await fetch(
+				`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
+			);
+			const data = await response.json();
+
+			if (data.features && data.features.length > 0) {
+				const placeName = data.features[0].place_name;
+				setStopPlace(placeName);
+			} else {
+				setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+			}
+		} catch (err) {
+			console.error("Reverse geocoding failed:", err);
+			setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+		}
+
+		// Require user to enter time manually
+		setStopTime("");
+		// Close the map modal immediately
+		setShowMapModal(false);
+		// Exit add-from-map mode
+		setIsAddingFromMap(false);
+	};
+
+	// Helper function to convert time string to minutes since midnight
+	const timeToMinutes = (timeStr) => {
+		if (!timeStr) return 0;
+		const [hours, minutes] = timeStr.split(":").map(Number);
+		return hours * 60 + minutes;
+	};
+
+	// Helper function to convert minutes since midnight to time string
+	const minutesToTime = (minutes) => {
+		const hours = Math.floor(minutes / 60);
+		const mins = minutes % 60;
+		return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
+	};
+
+	// Calculate journey start and end times from stops
+	const calculateJourneyTimes = (stopsList) => {
+		if (stopsList.length === 0) return { startTime: "", endTime: "" };
+
+		// Sort stops by their time in minutes since midnight
+		const sortedStops = [...stopsList].sort((a, b) => {
+			const timeA = timeToMinutes(a.stopTime);
+			const timeB = timeToMinutes(b.stopTime);
+			return timeA - timeB;
+		});
+
+		return {
+			startTime: sortedStops[0]?.stopTime || "",
+			endTime: sortedStops[sortedStops.length - 1]?.stopTime || "",
+		};
+	};
+
+	// Calculate return journey stops with reversed order and calculated times
+	const calculateReturnJourney = (stopsList, returnStartTime) => {
+		if (stopsList.length === 0) return [];
+
+		// Sort stops by time to get correct order
+		const sortedStops = [...stopsList].sort((a, b) => {
+			const timeA = timeToMinutes(a.stopTime);
+			const timeB = timeToMinutes(b.stopTime);
+			return timeA - timeB;
+		});
+
+		// Calculate time differences between consecutive stops
+		const timeDifferences = [];
+		for (let i = 0; i < sortedStops.length - 1; i++) {
+			const currentTime = timeToMinutes(sortedStops[i].stopTime);
+			const nextTime = timeToMinutes(sortedStops[i + 1].stopTime);
+			timeDifferences.push(nextTime - currentTime);
+		}
+
+		// Start return journey from the return start time
+		let currentReturnTime = timeToMinutes(returnStartTime);
+		const returnStops = [];
+
+		// Reverse the stops and calculate times
+		for (let i = sortedStops.length - 1; i >= 0; i--) {
+			const originalStop = sortedStops[i];
+			const returnStop = {
+				...originalStop,
+				stopId: `return_${originalStop.stopId}`,
+				stopNo: sortedStops.length - i, // Reverse stop numbers
+				stopTime: minutesToTime(currentReturnTime),
+			};
+			returnStops.push(returnStop);
+
+			// Add time difference for next stop (going backwards)
+			if (i > 0) {
+				const timeDiff = timeDifferences[i - 1];
+				currentReturnTime += timeDiff;
+			}
+		}
+
+		return returnStops;
+	};
 
 	// Add stop to the route
 	const handleAddStop = async () => {
 		setError("");
 
-		// Validation
 		if (!stopPlace.trim()) {
 			setError("Please enter a stop name.");
 			return;
@@ -111,27 +409,67 @@ const AddBus = () => {
 			return;
 		}
 
-		// Check for duplicate stop names
-		if (
-			stops.some(
-				(stop) =>
-					stop.stopName.toLowerCase() === stopPlace.toLowerCase()
-			)
-		) {
-			setError("This stop has already been added.");
+		// Check for duplicate stops using GPS coordinates first, then fallback to name
+		let duplicateType = null;
+		const isDuplicate = stops.some((stop) => {
+			// If we have coordinates from map click or selected suggestion
+			const hasCoordinates = mapClickLocation || (selectedStop && selectedStop.center);
+			
+			if (hasCoordinates) {
+				// Check if this stop has GPS coordinates
+				if (stop.lat && stop.lng) {
+					// Get coordinates to compare
+					let newLat, newLng;
+					if (mapClickLocation) {
+						newLat = mapClickLocation.lat;
+						newLng = mapClickLocation.lng;
+					} else if (selectedStop && selectedStop.center) {
+						newLat = selectedStop.center[1];
+						newLng = selectedStop.center[0];
+					}
+					
+					// Compare GPS coordinates (within ~10 meters tolerance)
+					if (newLat && newLng) {
+						const latDiff = Math.abs(stop.lat - newLat);
+						const lngDiff = Math.abs(stop.lng - newLng);
+						const tolerance = 0.0001; // ~10 meters
+						
+						if (latDiff < tolerance && lngDiff < tolerance) {
+							duplicateType = "location";
+							return true; // Same location
+						}
+					}
+				}
+			}
+			
+			// Fallback to name comparison
+			if (stop.stopName.toLowerCase() === stopPlace.toLowerCase()) {
+				duplicateType = "name";
+				return true;
+			}
+			return false;
+		});
+
+		if (isDuplicate) {
+			const errorMessage = duplicateType === "location" 
+				? "A stop at this location has already been added to the route."
+				: "A stop with this name has already been added to the route.";
+			setError(errorMessage);
 			return;
 		}
 
 		try {
 			let coordinates = { lat: null, lng: null };
 
-			// Get coordinates from selected suggestion or try to geocode
-			if (selectedStop && selectedStop.center) {
+			// Use coordinates from map click if available
+			if (mapClickLocation) {
+				coordinates = mapClickLocation;
+				setMapClickLocation(null);
+			} else if (selectedStop && selectedStop.center) {
 				coordinates.lat = selectedStop.center[1];
 				coordinates.lng = selectedStop.center[0];
 			}
 
-			// Create stop object - we'll store directly in bus document
 			const newStop = {
 				stopId: `stop_${Date.now()}_${Math.random()
 					.toString(36)
@@ -160,7 +498,6 @@ const AddBus = () => {
 	const handleRemoveStop = (stopId) => {
 		setStops((prevStops) => {
 			const filtered = prevStops.filter((stop) => stop.stopId !== stopId);
-			// Renumber the stops
 			return filtered.map((stop, index) => ({
 				...stop,
 				stopNo: index + 1,
@@ -185,7 +522,6 @@ const AddBus = () => {
 				newStops[currentIndex],
 			];
 
-			// Renumber
 			return newStops.map((stop, index) => ({
 				...stop,
 				stopNo: index + 1,
@@ -196,10 +532,13 @@ const AddBus = () => {
 	// Submit the form
 	const handleSubmit = async (event) => {
 		event.preventDefault();
+		// Guard against double submission
+		if (submitting) return;
+
 		setError("");
 		setSuccess("");
 
-		// Validation
+		// Basic validation
 		if (!currentUser || currentUser.role !== "admin") {
 			setError("Only admins can add buses.");
 			return;
@@ -209,9 +548,7 @@ const AddBus = () => {
 			!busNo.trim() ||
 			!busName.trim() ||
 			!driverName.trim() ||
-			!capacity ||
-			!startTime ||
-			!endTime
+			!capacity
 		) {
 			setError("Please fill all required fields.");
 			return;
@@ -233,18 +570,41 @@ const AddBus = () => {
 		}
 
 		try {
+			// Immediately disable the button
 			setSubmitting(true);
 
-			// Create bus document with stops directly embedded
+			// Normalize bus number for dedupe checks
+			const normalizedBusNo = busNo.trim().toUpperCase();
+
+			// Check for duplicate bus number in Firestore
+			const busesRef = collection(db, "buses");
+			const dupQuery = query(busesRef, where("busNo", "==", normalizedBusNo));
+			const dupSnap = await getDocs(dupQuery);
+			if (!dupSnap.empty) {
+				setError("A bus with this number already exists.");
+				setSubmitting(false);
+				return;
+			}
+
+			// Calculate journey times automatically from stops
+			const journeyTimes = calculateJourneyTimes(stops);
+
+			// Calculate return journey stops if enabled
+			let returnStops = [];
+			if (returnJourneyEnabled && returnStartTime) {
+				returnStops = calculateReturnJourney(stops, returnStartTime);
+			}
+
 			const busPayload = {
-				busNo: busNo.trim(),
+				busNo: normalizedBusNo,
 				busName: busName.trim(),
 				driverName: driverName.trim(),
 				capacity: parseInt(capacity),
-				currLoad: 0, // Initialize current load
-				startTime,
-				endTime,
-				stops: stops, // Store stops directly in bus document
+				currLoad: 0,
+				startTime: journeyTimes.startTime,
+				endTime: journeyTimes.endTime,
+				stops: stops,
+				returnStops: returnStops, // Store return journey stops
 				returnJourney: returnJourneyEnabled
 					? { enabled: true, startTime: returnStartTime }
 					: { enabled: false },
@@ -262,8 +622,7 @@ const AddBus = () => {
 				createdBy: currentUser.email,
 			};
 
-			// Add to Firestore
-			const busesRef = collection(db, "buses");
+			// Create new bus document (single entry)
 			const newBusDoc = await addDoc(busesRef, busPayload);
 
 			// Update admin's buses array
@@ -288,11 +647,14 @@ const AddBus = () => {
 			setBusName("");
 			setDriverName("");
 			setCapacity("");
-			setStartTime("");
-			setEndTime("");
 			setReturnJourneyEnabled(false);
 			setReturnStartTime("");
 			setStops([]);
+
+			// Call success callback
+			if (onSuccess) {
+				setTimeout(() => onSuccess(), 1500);
+			}
 		} catch (err) {
 			console.error("Error adding bus:", err);
 			setError("Failed to add bus. Please try again.");
@@ -330,7 +692,7 @@ const AddBus = () => {
 								type="text"
 								value={busNo}
 								onChange={(e) => setBusNo(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 								placeholder="e.g., 42A"
 								required
 							/>
@@ -344,7 +706,7 @@ const AddBus = () => {
 								type="text"
 								value={busName}
 								onChange={(e) => setBusName(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 								placeholder="e.g., City Express"
 								required
 							/>
@@ -358,7 +720,7 @@ const AddBus = () => {
 								type="text"
 								value={driverName}
 								onChange={(e) => setDriverName(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 								placeholder="e.g., John Doe"
 								required
 							/>
@@ -372,37 +734,9 @@ const AddBus = () => {
 								type="number"
 								value={capacity}
 								onChange={(e) => setCapacity(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 								placeholder="e.g., 40"
 								min="1"
-								required
-							/>
-						</div>
-					</div>
-
-					<div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-						<div>
-							<label className="block text-sm font-medium text-gray-700 mb-2">
-								Start Time *
-							</label>
-							<input
-								type="time"
-								value={startTime}
-								onChange={(e) => setStartTime(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-								required
-							/>
-						</div>
-
-						<div>
-							<label className="block text-sm font-medium text-gray-700 mb-2">
-								End Time *
-							</label>
-							<input
-								type="time"
-								value={endTime}
-								onChange={(e) => setEndTime(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
 								required
 							/>
 						</div>
@@ -435,7 +769,7 @@ const AddBus = () => {
 								onChange={(e) =>
 									setReturnStartTime(e.target.value)
 								}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 								required={returnJourneyEnabled}
 							/>
 						</div>
@@ -444,9 +778,17 @@ const AddBus = () => {
 
 				{/* Route Stops Section */}
 				<div className="bg-gray-50 p-6 rounded-lg">
-					<h3 className="text-lg font-semibold mb-4 text-gray-900">
-						Route Stops
-					</h3>
+					<div className="flex justify-between items-center mb-4">
+						<h3 className="text-lg font-semibold text-gray-900">
+							Route Stops
+						</h3>
+						<button
+							type="button"
+							onClick={() => setShowMapModal(true)}
+							className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2">
+							🗺️ Open Map View
+						</button>
+					</div>
 
 					<div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 						<div>
@@ -461,7 +803,7 @@ const AddBus = () => {
 										setStopPlace(e.target.value);
 										setSelectedStop(null);
 									}}
-									className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+									className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 									placeholder="e.g., Main Street, Central Station"
 									autoComplete="off"
 								/>
@@ -487,11 +829,11 @@ const AddBus = () => {
 											}}>
 											<div className="font-medium text-sm">
 												{suggestion.text}
-											</div>
+												</div>
 											<div className="text-xs text-gray-600">
 												{suggestion.place_name}
+												</div>
 											</div>
-										</div>
 									))}
 								</div>
 							)}
@@ -505,7 +847,7 @@ const AddBus = () => {
 								type="time"
 								value={stopTime}
 								onChange={(e) => setStopTime(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
 							/>
 						</div>
 					</div>
@@ -524,6 +866,21 @@ const AddBus = () => {
 							<h4 className="font-semibold mb-3 text-gray-900">
 								Added Stops ({stops.length})
 							</h4>
+							<p className="text-sm text-gray-600 mb-3">
+								Journey will start at{" "}
+								<strong>
+									{calculateJourneyTimes(stops).startTime}
+								</strong>{" "}
+								and end at{" "}
+								<strong>
+									{calculateJourneyTimes(stops).endTime}
+								</strong>
+								{returnJourneyEnabled && returnStartTime && (
+									<span className="block mt-1 text-green-600">
+										Return journey starts at {returnStartTime}
+									</span>
+								)}
+							</p>
 
 							<div className="bg-white rounded-lg border overflow-hidden">
 								<div className="overflow-x-auto">
@@ -582,10 +939,10 @@ const AddBus = () => {
 																		stop.stopId,
 																		"up"
 																	)
-																}
+															}
 																disabled={
 																	index === 0
-																}
+																	}
 																className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
 																title="Move Up">
 																↑
@@ -597,12 +954,12 @@ const AddBus = () => {
 																		stop.stopId,
 																		"down"
 																	)
-																}
+															}
 																disabled={
 																	index ===
-																	stops.length -
-																		1
-																}
+																		stops.length -
+																			1
+																	}
 																className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
 																title="Move Down">
 																↓
@@ -613,8 +970,8 @@ const AddBus = () => {
 																	handleRemoveStop(
 																		stop.stopId
 																	)
-																}
-																className="text-red-600 hover:text-red-900"
+															}
+															className="text-red-600 hover:text-red-900"
 																title="Remove Stop">
 																✕
 															</button>
@@ -635,13 +992,10 @@ const AddBus = () => {
 					<button
 						type="button"
 						onClick={() => {
-							// Reset form
 							setBusNo("");
 							setBusName("");
 							setDriverName("");
 							setCapacity("");
-							setStartTime("");
-							setEndTime("");
 							setReturnJourneyEnabled(false);
 							setReturnStartTime("");
 							setStops([]);
@@ -671,27 +1025,130 @@ const AddBus = () => {
 					</button>
 				</div>
 
-				{/* Form Tips */}
-				<div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-					<h4 className="font-medium text-blue-900 mb-2">Tips:</h4>
-					<ul className="text-sm text-blue-800 space-y-1">
-						<li>• Add at least 2 stops to create a valid route</li>
-						<li>
-							• Use specific location names for better GPS
-							accuracy
-						</li>
-						<li>
-							• Arrange stops in the correct travel order using
-							↑/↓ buttons
-						</li>
-						<li>
-							• Return journey will reverse the stop order
-							automatically
-						</li>
-					</ul>
-				</div>
 			</form>
+
+			{/* Map Modal */}
+			{showMapModal && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm p-4">
+					<div className="w-full max-w-6xl h-[80vh] rounded-xl bg-white text-black relative overflow-hidden shadow-2xl">
+						{/* Map Header */}
+						<div className="flex justify-between items-center p-4 border-b border-gray-200 bg-gray-50">
+							<div>
+								<h3 className="text-lg font-bold text-gray-900">
+									Route Map View
+								</h3>
+								<p className="text-sm text-gray-600">
+									{stops.length} stops added • Click "Add from
+									Map" then click on the map to add a stop
+								</p>
+							</div>
+							<div className="flex items-center gap-3">
+								<button
+									onClick={() =>
+										setIsAddingFromMap(!isAddingFromMap)
+									}
+									className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+										isAddingFromMap
+											? "bg-red-600 hover:bg-red-700 text-white"
+											: "bg-green-600 hover:bg-green-700 text-white"
+									}`}> 
+									{isAddingFromMap
+										? "Cancel Adding"
+										: "Add from Map"}
+								</button>
+								<button
+									onClick={() => setShowMapModal(false)}
+									className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+									aria-label="Close map">
+									<svg
+										className="h-6 w-6 text-gray-600"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke="currentColor">
+										<path
+											strokeLinecap="round"
+											strokeLinejoin="round"
+											strokeWidth={2}
+											d="M6 18L18 6M6 6l12 12"
+										/>
+									</svg>
+								</button>
+							</div>
+						</div>
+
+						{/* Map Container */}
+						<div className="relative flex-1 h-full">
+							<div
+								ref={mapContainer}
+								className="w-full h-full"
+								style={{ height: "calc(80vh - 80px)" }}
+							/>
+
+							{/* Map Legend */}
+							<div className="absolute top-4 left-4 bg-white bg-opacity-95 p-3 rounded-lg shadow-md text-xs">
+								<h4 className="font-medium text-gray-900 mb-2">
+									Legend
+								</h4>
+								<div className="space-y-1">
+									<div className="flex items-center gap-2">
+										<div className="w-3 h-3 bg-green-500 rounded-full"></div>
+										<span>Start Stop</span>
+									</div>
+									<div className="flex items-center gap-2">
+										<div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+										<span>Middle Stops</span>
+									</div>
+									<div className="flex items-center gap-2">
+										<div className="w-3 h-3 bg-red-500 rounded-full"></div>
+										<span>End Stop</span>
+									</div>
+									<div className="flex items-center gap-2">
+										<div className="w-4 h-1 bg-blue-500 rounded"></div>
+										<span>Route Path</span>
+									</div>
+								</div>
+								{isAddingFromMap && (
+									<div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
+										<p className="text-yellow-800 font-medium">
+											Click anywhere on the map to add a
+												stop
+										</p>
+									</div>
+								)}
+							</div>
+
+							{/* Map Instructions */}
+							{stops.length === 0 && (
+								<div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90">
+									<div className="text-center">
+										<svg
+											className="mx-auto h-12 w-12 text-gray-400"
+											fill="none"
+											viewBox="0 0 24 24"
+											stroke="currentColor">
+											<path
+												strokeLinecap="round"
+												strokeLinejoin="round"
+												strokeWidth={2}
+												d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"
+											/>
+										</svg>
+										<h3 className="mt-2 text-lg font-medium text-gray-900">
+											Add Your First Stop
+										</h3>
+										<p className="mt-1 text-sm text-gray-500">
+											Use the text form or click "Add from
+												Map" to place stops on the route
+										</p>
+									</div>
+								</div>
+							)}
+						</div>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 };
+
 export default AddBus;

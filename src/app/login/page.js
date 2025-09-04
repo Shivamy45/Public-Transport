@@ -12,10 +12,9 @@ const LoginPage = () => {
 	const [password, setPassword] = useState("");
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
-	const [isLoggedIn, setIsLoggedIn] = useState(false);
-	const [currentUser, setCurrentUser] = useState(null);
 
 	useEffect(() => {
+		// Check if user is already logged in
 		try {
 			const saved =
 				typeof window !== "undefined"
@@ -23,8 +22,7 @@ const LoginPage = () => {
 					: null;
 			if (saved) {
 				const parsed = JSON.parse(saved);
-				isLoggedIn(true);
-				// Immediately redirect based on role if already logged in
+				// Redirect based on role if already logged in
 				if (parsed?.role === "admin") {
 					router.replace("/admin");
 				} else {
@@ -32,10 +30,10 @@ const LoginPage = () => {
 				}
 				return;
 			}
-		} catch (_) {
-			// ignore
+		} catch (err) {
+			console.error("Error checking existing session:", err);
 		}
-	}, []);
+	}, [router]);
 
 	const handleSubmit = async (event) => {
 		event.preventDefault();
@@ -48,143 +46,178 @@ const LoginPage = () => {
 
 		try {
 			setIsSubmitting(true);
+
 			// Find user by email in Firestore
 			const usersRef = collection(db, "users");
 			const q = query(usersRef, where("email", "==", email));
 			const snap = await getDocs(q);
 
 			if (snap.empty) {
-				setErrorMessage("No email found");
+				setErrorMessage("No account found with this email address.");
 				return;
 			}
 
-			// Assuming unique emails, take the first
+			// Get user data
 			const userDoc = snap.docs[0].data();
 			const storedPassword = userDoc?.password || "";
 
 			if (storedPassword !== password) {
-				setErrorMessage("Incorrect password");
+				setErrorMessage("Incorrect password. Please try again.");
 				return;
 			}
 
-			// Success: save session and redirect
+			// Success: save session and update global state immediately
 			const sessionUser = {
 				email: userDoc.email,
 				role: userDoc.role,
 				name: userDoc.name,
 			};
+
 			if (typeof window !== "undefined") {
 				localStorage.setItem(
 					"currentUser",
 					JSON.stringify(sessionUser)
 				);
+				// Dispatch custom event to immediately notify other components
+				window.dispatchEvent(new Event("authStateChanged"));
 			}
-			setCurrentUser(sessionUser);
-			setIsLoggedIn(true);
 
+			// Redirect based on role
 			if (userDoc.role === "admin") {
 				router.push("/admin");
 			} else {
 				router.push("/");
 			}
 		} catch (error) {
-			setErrorMessage("Login failed. Please try again.");
+			console.error("Login error:", error);
+			setErrorMessage(
+				"Login failed. Please check your connection and try again."
+			);
 		} finally {
 			setIsSubmitting(false);
 		}
 	};
 
 	return (
-		<div
-			style={{
-				maxWidth: "420px",
-				margin: "40px auto",
-				padding: "24px",
-				border: "1px solid #e5e7eb",
-				borderRadius: "8px",
-			}}>
-			<h1
-				style={{
-					fontSize: "20px",
-					fontWeight: 600,
-					marginBottom: "16px",
-				}}>
-				Login
-			</h1>
+		<div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center px-4 py-12">
+			<div className="w-full max-w-md">
+				<div className="bg-white rounded-xl shadow-lg p-8">
+					{/* Header */}
+					<div className="text-center mb-8">
+						<h1 className="text-3xl font-bold text-gray-900 mb-2">
+							Welcome Back
+						</h1>
+						<p className="text-gray-600">
+							Sign in to your TrackIt account
+						</p>
+					</div>
 
-			{errorMessage && (
-				<div style={{ marginBottom: "12px", color: "#b91c1c" }}>
-					{errorMessage}
+					{/* Error Message */}
+					{errorMessage && (
+						<div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+							<div className="flex items-center">
+								<svg
+									className="h-5 w-5 text-red-400 mr-2"
+									fill="none"
+									viewBox="0 0 24 24"
+									stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+									/>
+								</svg>
+								<span className="text-red-700 text-sm">
+									{errorMessage}
+								</span>
+							</div>
+						</div>
+					)}
+
+					{/* Login Form */}
+					<form onSubmit={handleSubmit} className="space-y-6">
+						<div>
+							<label
+								htmlFor="email"
+								className="block text-sm font-medium text-gray-700 mb-2">
+								Email Address
+							</label>
+							<input
+								id="email"
+								type="email"
+								value={email}
+								onChange={(e) => setEmail(e.target.value)}
+								placeholder="you@example.com"
+								required
+								className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900"
+								disabled={isSubmitting}
+							/>
+						</div>
+
+						<div>
+							<label
+								htmlFor="password"
+								className="block text-sm font-medium text-gray-700 mb-2">
+								Password
+							</label>
+							<input
+								id="password"
+								type="password"
+								value={password}
+								onChange={(e) => setPassword(e.target.value)}
+								placeholder="Your password"
+								required
+								className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors text-gray-900"
+								disabled={isSubmitting}
+							/>
+						</div>
+
+						<button
+							type="submit"
+							disabled={isSubmitting}
+							className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:cursor-not-allowed flex items-center justify-center">
+							{isSubmitting ? (
+								<>
+									<div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></div>
+									Signing in...
+								</>
+							) : (
+								"Sign In"
+							)}
+						</button>
+					</form>
+
+					{/* Footer */}
+					<div className="mt-8 text-center">
+						<p className="text-sm text-gray-600">
+							Don't have an account?{" "}
+							<Link
+								href="/signup"
+								className="text-blue-600 hover:text-blue-700 font-medium transition-colors">
+								Create one here
+							</Link>
+						</p>
+					</div>
+
+					{/* Demo Credentials (for development) */}
+					<div className="mt-6 p-4 bg-gray-50 rounded-lg">
+						<h3 className="text-xs font-medium text-gray-700 mb-2">
+							Demo Credentials:
+						</h3>
+						<div className="text-xs text-gray-600 space-y-1">
+							<p>
+								<strong>Admin:</strong> admin@example.com /
+								password123
+							</p>
+							<p>
+								<strong>User:</strong> user@example.com /
+								password123
+							</p>
+						</div>
+					</div>
 				</div>
-			)}
-
-			<form onSubmit={handleSubmit}>
-				<div
-					style={{
-						display: "flex",
-						flexDirection: "column",
-						gap: "12px",
-					}}>
-					<label htmlFor="email" style={{ fontSize: "14px" }}>
-						Email
-					</label>
-					<input
-						id="email"
-						type="email"
-						value={email}
-						onChange={(e) => setEmail(e.target.value)}
-						placeholder="you@example.com"
-						required
-						style={{
-							padding: "10px 12px",
-							border: "1px solid #d1d5db",
-							borderRadius: "6px",
-						}}
-					/>
-
-					<label
-						htmlFor="password"
-						style={{ fontSize: "14px", marginTop: "8px" }}>
-						Password
-					</label>
-					<input
-						id="password"
-						type="password"
-						value={password}
-						onChange={(e) => setPassword(e.target.value)}
-						placeholder="Your password"
-						required
-						style={{
-							padding: "10px 12px",
-							border: "1px solid #d1d5db",
-							borderRadius: "6px",
-						}}
-					/>
-
-					<button
-						type="submit"
-						disabled={isSubmitting}
-						style={{
-							marginTop: "16px",
-							padding: "10px 12px",
-							backgroundColor: isSubmitting
-								? "#9ca3af"
-								: "#111827",
-							color: "white",
-							border: "none",
-							borderRadius: "6px",
-							cursor: isSubmitting ? "not-allowed" : "pointer",
-						}}>
-						{isSubmitting ? "Logging in…" : "Log In"}
-					</button>
-				</div>
-			</form>
-			<p className="text-center text-sm mt-4">
-				Don't have an account?{" "}
-				<Link href="/signup" className="text-blue-500">
-					Sign up
-				</Link>
-			</p>
+			</div>
 		</div>
 	);
 };

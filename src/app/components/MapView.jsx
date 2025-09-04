@@ -1,4 +1,6 @@
 "use client";
+// TODO: This component is temporarily disabled from the admin dashboard
+// Re-enable when bus location tracking and real-time updates are implemented
 import { useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
 
