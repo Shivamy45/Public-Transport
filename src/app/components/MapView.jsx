@@ -15,7 +15,7 @@ export default function MapView() {
 			container: mapContainer.current,
 			style: "mapbox://styles/mapbox/streets-v11",
 			center: [78.9629, 20.5937], // [lng, lat] → India center
-			zoom: 4,
+			zoom: 15,
 			maxBounds: [
 				[68.176645, 6.554607], // Southwest
 				[97.402561, 35.674545], // Northeast
