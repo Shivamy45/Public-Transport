@@ -1,336 +1,556 @@
 import React, { useState, useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import { doc, getDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 // Haversine formula to calculate distance between two lat/lng points in meters
 function haversineDistance(lat1, lon1, lat2, lon2) {
-    function toRad(x) { return x * Math.PI / 180; }
-    const R = 6371000; // meters
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(toRad(lat1)) *
-            Math.cos(toRad(lat2)) *
-            Math.sin(dLon / 2) *
-            Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+	function toRad(x) {
+		return (x * Math.PI) / 180;
+	}
+	const R = 6371000; // meters
+	const dLat = toRad(lat2 - lat1);
+	const dLon = toRad(lon2 - lon1);
+	const a =
+		Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+		Math.cos(toRad(lat1)) *
+			Math.cos(toRad(lat2)) *
+			Math.sin(dLon / 2) *
+			Math.sin(dLon / 2);
+	const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+	return R * c;
 }
 
 const BusInfo = ({ busId }) => {
-    // State for bus doc and stops
-    const [bus, setBus] = useState(null);
-    const [stops, setStops] = useState([]);
-    // Journey state
-    const [currentStopIndex, setCurrentStopIndex] = useState(0);
-    const [status, setStatus] = useState("Not Started"); // Not Started | Ongoing | Reached | Completed | Return Ongoing | Return Completed
-    const [isReturn, setIsReturn] = useState(false);
-    // Geolocation state
-    const [driverLocation, setDriverLocation] = useState(null);
-    const [lastUpdated, setLastUpdated] = useState(null);
-    // Mapbox
-    const mapContainer = useRef(null);
-    const mapRef = useRef(null);
+	// State for bus doc and stops
+	const [bus, setBus] = useState(null);
+	const [stops, setStops] = useState([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState("");
 
-    // Fetch bus and stops
-    useEffect(() => {
-        const fetchData = async () => {
-            if (!busId) return;
-            // Fetch bus document
-            const busDocRef = doc(db, "buses", busId);
-            const busSnap = await getDoc(busDocRef);
-            if (!busSnap.exists()) return;
-            const busData = busSnap.data();
-            setBus(busData);
-            // Fetch stops subcollection, order by sequence or index
-            const stopsCol = collection(busDocRef, "stops");
-            const stopsSnap = await getDocs(stopsCol);
-            let stopArr = [];
-            stopsSnap.forEach((doc) => {
-                stopArr.push({ id: doc.id, ...doc.data() });
-            });
-            // Sort by index/sequence if available
-            stopArr.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-            setStops(stopArr);
-        };
-        fetchData();
-    }, [busId]);
+	// Journey state
+	const [currentStopIndex, setCurrentStopIndex] = useState(0);
+	const [status, setStatus] = useState("Not Started");
+	const [isReturn, setIsReturn] = useState(false);
 
-    // Mapbox setup
-    useEffect(() => {
-        if (!stops.length || !mapContainer.current) return;
-        mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "pk.eyJ1IjoiZGVtb3VzZXIiLCJhIjoiY2xkZ2h6Y2Q5MDAwOTQwcDdtbGd2bWp1bCJ9.9Zq4S5UQ9pWZb1r2JX5S3A"; // fallback
-        if (mapRef.current) {
-            mapRef.current.remove();
-        }
-        const center = [stops[0].lng, stops[0].lat];
-        mapRef.current = new mapboxgl.Map({
-            container: mapContainer.current,
-            style: "mapbox://styles/mapbox/streets-v11",
-            center,
-            zoom: 12,
-        });
-        // Draw polyline
-        mapRef.current.on("load", () => {
-            mapRef.current.addSource("route", {
-                type: "geojson",
-                data: {
-                    type: "Feature",
-                    properties: {},
-                    geometry: {
-                        type: "LineString",
-                        coordinates: stops.map((stop) => [stop.lng, stop.lat]),
-                    },
-                },
-            });
-            mapRef.current.addLayer({
-                id: "route",
-                type: "line",
-                source: "route",
-                layout: { "line-join": "round", "line-cap": "round" },
-                paint: { "line-color": "#0074D9", "line-width": 4 },
-            });
-            // Add markers
-            stops.forEach((stop, idx) => {
-                new mapboxgl.Marker({ color: idx === currentStopIndex ? "#FF4136" : "#2ECC40" })
-                    .setLngLat([stop.lng, stop.lat])
-                    .setPopup(new mapboxgl.Popup().setText(`${stop.name}`))
-                    .addTo(mapRef.current);
-            });
-        });
-        // Center on driver's location if available
-        if (driverLocation) {
-            mapRef.current.setCenter([driverLocation.lng, driverLocation.lat]);
-        }
-        // Clean up
-        return () => {
-            if (mapRef.current) mapRef.current.remove();
-        };
-    // eslint-disable-next-line
-    }, [stops, currentStopIndex]);
+	// Geolocation state
+	const [driverLocation, setDriverLocation] = useState(null);
+	const [lastUpdated, setLastUpdated] = useState(null);
 
-    // Watch driver geolocation
-    useEffect(() => {
-        let watchId;
-        if ("geolocation" in navigator) {
-            watchId = navigator.geolocation.watchPosition(
-                (pos) => {
-                    setDriverLocation({
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                    });
-                    setLastUpdated(new Date());
-                },
-                (err) => {
-                    // ignore
-                },
-                { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
-            );
-        }
-        return () => {
-            if (watchId) navigator.geolocation.clearWatch(watchId);
-        };
-    }, []);
+	// Mapbox
+	const mapContainer = useRef(null);
+	const mapRef = useRef(null);
+	const markersRef = useRef([]);
+	const driverMarkerRef = useRef(null);
 
-    // Auto-mark stop as reached if within threshold (e.g., 60 meters)
-    useEffect(() => {
-        if (
-            !driverLocation ||
-            !stops.length ||
-            currentStopIndex >= stops.length ||
-            status === "Completed" ||
-            status === "Return Completed"
-        )
-            return;
-        const nextStop = stops[currentStopIndex];
-        const dist = haversineDistance(
-            driverLocation.lat,
-            driverLocation.lng,
-            nextStop.lat,
-            nextStop.lng
-        );
-        if (dist < 60 && status !== "Reached") {
-            setStatus("Reached");
-        }
-    }, [driverLocation, stops, currentStopIndex, status]);
+	// Fetch bus and stops with real-time updates
+	useEffect(() => {
+		if (!busId) return;
 
-    // Handlers
-    const handleStartJourney = () => {
-        setStatus("Ongoing");
-        setCurrentStopIndex(0);
-        setIsReturn(false);
-    };
-    const handleReachStop = () => {
-        if (currentStopIndex < stops.length - 1) {
-            setCurrentStopIndex((idx) => idx + 1);
-            setStatus("Ongoing");
-        } else {
-            setStatus("Completed");
-        }
-    };
-    const handleStartReturnJourney = () => {
-        setIsReturn(true);
-        setStatus("Return Ongoing");
-        setCurrentStopIndex(0);
-        setStops((prev) => [...prev].reverse());
-    };
-    const handleReachReturnStop = () => {
-        if (currentStopIndex < stops.length - 1) {
-            setCurrentStopIndex((idx) => idx + 1);
-            setStatus("Return Ongoing");
-        } else {
-            setStatus("Return Completed");
-        }
-    };
+		setLoading(true);
+		setError("");
 
-    // Compute current status
-    let journeyStatusLabel = "";
-    if (status === "Not Started") {
-        journeyStatusLabel = "Starting from " + (stops[0]?.name || "");
-    } else if (status === "Ongoing") {
-        journeyStatusLabel =
-            "Ongoing to " +
-            (stops[currentStopIndex + 1]?.name || stops[stops.length - 1]?.name);
-    } else if (status === "Reached") {
-        journeyStatusLabel =
-            "Reached " + (stops[currentStopIndex]?.name || "");
-    } else if (status === "Completed") {
-        journeyStatusLabel = "Forward journey completed";
-    } else if (status === "Return Ongoing") {
-        journeyStatusLabel =
-            "Return journey ongoing to " +
-            (stops[currentStopIndex + 1]?.name || stops[stops.length - 1]?.name);
-    } else if (status === "Return Completed") {
-        journeyStatusLabel = "Return journey completed";
-    }
+		// Real-time listener for bus document
+		const unsubscribe = onSnapshot(
+			doc(db, "buses", busId),
+			(docSnap) => {
+				if (docSnap.exists()) {
+					const busData = docSnap.data();
+					setBus(busData);
 
-    // Current load
-    const currLoad = bus?.currLoad ?? "-";
-    // Capacity
-    const capacity = bus?.capacity ?? "-";
-    // Driver name
-    const driverName = bus?.driverName ?? "";
-    // Bus no and name
-    const busNo = bus?.busNo ?? "";
-    const busName = bus?.busName ?? "";
-    // Start stop name
-    const startStopName = stops[0]?.name ?? "";
-    // Last updated
-    const lastUpdatedStr = lastUpdated
-        ? lastUpdated.toLocaleTimeString()
-        : bus?.lastUpdated
-        ? new Date(bus.lastUpdated.seconds * 1000).toLocaleTimeString()
-        : "";
+					// Use stops from bus document directly
+					if (busData.stops && Array.isArray(busData.stops)) {
+						const processedStops = busData.stops.map(
+							(stop, index) => ({
+								id: stop.stopId || `stop_${index}`,
+								name: stop.stopName,
+								lat: stop.lat || 0,
+								lng: stop.lng || 0,
+								time: stop.stopTime,
+								stopNo: stop.stopNo || index + 1,
+								...stop,
+							})
+						);
+						setStops(processedStops);
+					} else {
+						setStops([]);
+					}
+					setLoading(false);
+				} else {
+					setError("Bus not found");
+					setLoading(false);
+				}
+			},
+			(error) => {
+				console.error("Error fetching bus:", error);
+				setError("Failed to load bus data");
+				setLoading(false);
+			}
+		);
 
-    // Next stop
-    const nextStopName =
-        currentStopIndex < stops.length
-            ? stops[currentStopIndex]?.name
-            : "";
-    // End stop
-    const endStopName = stops[stops.length - 1]?.name ?? "";
+		return () => unsubscribe();
+	}, [busId]);
 
-    // ETA: just show distance for now
-    let ETA = "";
-    if (
-        driverLocation &&
-        currentStopIndex < stops.length &&
-        stops.length > 0
-    ) {
-        const dist = haversineDistance(
-            driverLocation.lat,
-            driverLocation.lng,
-            stops[currentStopIndex].lat,
-            stops[currentStopIndex].lng
-        );
-        ETA = `${Math.round(dist)} m`;
-    }
+	// Initialize map
+	useEffect(() => {
+		if (!stops.length || !mapContainer.current || loading) return;
 
-    // Return journey enabled
-    const returnJourneyEnabled = !!bus?.returnJourney;
+		// Clean up existing map
+		if (mapRef.current) {
+			mapRef.current.remove();
+		}
 
-    return (
-        <div className="flex">
-            {/* Left panel: Details */}
-            <div className="flex flex-col gap-2 p-4 border-r min-w-[220px]">
-                <div>
-                    <p className="text-xl font-bold">{busNo}</p>
-                    <p className="text-lg">{busName}</p>
-                </div>
-                <p className="text-sm text-gray-700">
-                    {"Driver: " + driverName}
-                </p>
-                <p className="text-sm">
-                    {currLoad + " / " + capacity} <span className="text-xs">seats</span>
-                </p>
-                <p className="text-sm">
-                    {"Started From: " + startStopName}
-                </p>
-                <div className="text-xs text-gray-500">
-                    <p>Status: {journeyStatusLabel}</p>
-                    <p>Last Updated: {lastUpdatedStr}</p>
-                </div>
-            </div>
-            {/* Middle panel: Journey controls */}
-            <div className="flex flex-col items-center justify-center px-6 gap-3">
-                <button className="bg-blue-600 text-white px-4 py-2 rounded mb-2 cursor-default" disabled>
-                    {journeyStatusLabel}
-                </button>
-                {status === "Not Started" && (
-                    <button
-                        className="bg-green-500 text-white px-4 py-2 rounded"
-                        onClick={handleStartJourney}
-                    >
-                        Start Journey
-                    </button>
-                )}
-                {status === "Reached" && !isReturn && (
-                    <button
-                        className="bg-green-600 text-white px-4 py-2 rounded"
-                        onClick={handleReachStop}
-                    >
-                        Continue to Next Stop
-                    </button>
-                )}
-                {status === "Completed" && returnJourneyEnabled && !isReturn && (
-                    <button
-                        className="bg-indigo-600 text-white px-4 py-2 rounded"
-                        onClick={handleStartReturnJourney}
-                    >
-                        Start Return Journey
-                    </button>
-                )}
-                {status === "Reached" && isReturn && (
-                    <button
-                        className="bg-green-600 text-white px-4 py-2 rounded"
-                        onClick={handleReachReturnStop}
-                    >
-                        Continue to Next Stop (Return)
-                    </button>
-                )}
-            </div>
-            {/* Right panel: Map */}
-            <div className="flex-1 min-w-[320px] h-[400px] relative">
-                <div
-                    ref={mapContainer}
-                    className="absolute inset-0"
-                    style={{ minHeight: 400, minWidth: 320 }}
-                />
-                {/* Next/End stop info overlay */}
-                <div className="absolute top-2 right-2 bg-white bg-opacity-80 p-2 rounded shadow text-xs">
+		// Clean up existing markers
+		markersRef.current.forEach((marker) => marker.remove());
+		markersRef.current = [];
+		if (driverMarkerRef.current) {
+			driverMarkerRef.current.remove();
+			driverMarkerRef.current = null;
+		}
+
+		// Set mapbox token
+		mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+
+		if (!mapboxgl.accessToken) {
+			setError("Mapbox token not configured");
+			return;
+		}
+
+		// Calculate map center and bounds
+		const validStops = stops.filter((stop) => stop.lat && stop.lng);
+		if (validStops.length === 0) {
+			setError("No valid stop coordinates found");
+			return;
+		}
+
+		const center =
+			validStops.length > 0
+				? [validStops[0].lng, validStops[0].lat]
+				: [77.209, 28.6139]; // Default to Delhi
+
+		// Initialize map
+		mapRef.current = new mapboxgl.Map({
+			container: mapContainer.current,
+			style: "mapbox://styles/mapbox/streets-v11",
+			center,
+			zoom: 12,
+		});
+
+		mapRef.current.on("load", () => {
+			// Add route line if we have multiple stops
+			if (validStops.length > 1) {
+				mapRef.current.addSource("route", {
+					type: "geojson",
+					data: {
+						type: "Feature",
+						properties: {},
+						geometry: {
+							type: "LineString",
+							coordinates: validStops.map((stop) => [
+								stop.lng,
+								stop.lat,
+							]),
+						},
+					},
+				});
+
+				mapRef.current.addLayer({
+					id: "route",
+					type: "line",
+					source: "route",
+					layout: { "line-join": "round", "line-cap": "round" },
+					paint: { "line-color": "#0074D9", "line-width": 4 },
+				});
+			}
+
+			// Add stop markers
+			validStops.forEach((stop, idx) => {
+				const isCurrentStop = idx === currentStopIndex;
+				const isPastStop = idx < currentStopIndex;
+
+				let markerColor = "#2ECC40"; // Green for upcoming stops
+				if (isCurrentStop) markerColor = "#FF4136"; // Red for current
+				if (isPastStop) markerColor = "#AAAAAA"; // Gray for completed
+
+				const marker = new mapboxgl.Marker({ color: markerColor })
+					.setLngLat([stop.lng, stop.lat])
+					.setPopup(
+						new mapboxgl.Popup().setHTML(`
+                            <div>
+                                <strong>${stop.name}</strong><br/>
+                                Stop ${stop.stopNo}<br/>
+                                Time: ${stop.time}
+                            </div>
+                        `)
+					)
+					.addTo(mapRef.current);
+
+				markersRef.current.push(marker);
+			});
+
+			// Fit map to show all stops
+			if (validStops.length > 1) {
+				const bounds = new mapboxgl.LngLatBounds();
+				validStops.forEach((stop) =>
+					bounds.extend([stop.lng, stop.lat])
+				);
+				mapRef.current.fitBounds(bounds, { padding: 50 });
+			}
+		});
+
+		return () => {
+			if (mapRef.current) {
+				mapRef.current.remove();
+				mapRef.current = null;
+			}
+		};
+	}, [stops, loading, currentStopIndex]);
+
+	// Update driver location on map
+	useEffect(() => {
+		if (!driverLocation || !mapRef.current) return;
+
+		// Remove existing driver marker
+		if (driverMarkerRef.current) {
+			driverMarkerRef.current.remove();
+		}
+
+		// Add new driver marker
+		const driverMarker = new mapboxgl.Marker({
+			color: "#FFD700", // Gold color for driver
+			scale: 1.2,
+		})
+			.setLngLat([driverLocation.lng, driverLocation.lat])
+			.setPopup(
+				new mapboxgl.Popup().setHTML(`
                     <div>
-                        <strong>Next Stop:</strong> {nextStopName}
-                        {ETA && <span> ({ETA})</span>}
+                        <strong>Driver Location</strong><br/>
+                        Updated: ${
+							lastUpdated
+								? lastUpdated.toLocaleTimeString()
+								: "Unknown"
+						}
                     </div>
-                    <div>
-                        <strong>End Stop:</strong> {endStopName}
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+                `)
+			)
+			.addTo(mapRef.current);
+
+		driverMarkerRef.current = driverMarker;
+
+		// Center map on driver location
+		mapRef.current.easeTo({
+			center: [driverLocation.lng, driverLocation.lat],
+			zoom: 15,
+		});
+	}, [driverLocation, lastUpdated]);
+
+	// Watch driver geolocation
+	useEffect(() => {
+		let watchId;
+
+		if ("geolocation" in navigator) {
+			watchId = navigator.geolocation.watchPosition(
+				(pos) => {
+					const newLocation = {
+						lat: pos.coords.latitude,
+						lng: pos.coords.longitude,
+					};
+					setDriverLocation(newLocation);
+					setLastUpdated(new Date());
+				},
+				(err) => {
+					console.warn("Geolocation error:", err.message);
+				},
+				{
+					enableHighAccuracy: true,
+					maximumAge: 10000,
+					timeout: 20000,
+				}
+			);
+		}
+
+		return () => {
+			if (watchId) {
+				navigator.geolocation.clearWatch(watchId);
+			}
+		};
+	}, []);
+
+	// Auto-mark stop as reached if within threshold (100 meters)
+	useEffect(() => {
+		if (
+			!driverLocation ||
+			!stops.length ||
+			currentStopIndex >= stops.length ||
+			status === "Completed" ||
+			status === "Return Completed"
+		)
+			return;
+
+		const currentStop = stops[currentStopIndex];
+		if (!currentStop?.lat || !currentStop?.lng) return;
+
+		const dist = haversineDistance(
+			driverLocation.lat,
+			driverLocation.lng,
+			currentStop.lat,
+			currentStop.lng
+		);
+
+		if (dist < 100 && status === "Ongoing") {
+			setStatus("Reached");
+		}
+	}, [driverLocation, stops, currentStopIndex, status]);
+
+	// Handler functions
+	const handleStartJourney = () => {
+		setStatus("Ongoing");
+		setCurrentStopIndex(0);
+		setIsReturn(false);
+	};
+
+	const handleReachStop = () => {
+		if (currentStopIndex < stops.length - 1) {
+			setCurrentStopIndex((prev) => prev + 1);
+			setStatus("Ongoing");
+		} else {
+			setStatus("Completed");
+		}
+	};
+
+	const handleStartReturnJourney = () => {
+		setIsReturn(true);
+		setStatus("Return Ongoing");
+		setCurrentStopIndex(0);
+		// Reverse the stops for return journey
+		setStops((prev) => [...prev].reverse());
+	};
+
+	const handleReachReturnStop = () => {
+		if (currentStopIndex < stops.length - 1) {
+			setCurrentStopIndex((prev) => prev + 1);
+			setStatus("Return Ongoing");
+		} else {
+			setStatus("Return Completed");
+		}
+	};
+
+	// Loading state
+	if (loading) {
+		return (
+			<div className="flex items-center justify-center p-8">
+				<div className="text-center">Loading bus information...</div>
+			</div>
+		);
+	}
+
+	// Error state
+	if (error) {
+		return (
+			<div className="flex items-center justify-center p-8">
+				<div className="text-center text-red-600">{error}</div>
+			</div>
+		);
+	}
+
+	// No bus data
+	if (!bus) {
+		return (
+			<div className="flex items-center justify-center p-8">
+				<div className="text-center">No bus data found</div>
+			</div>
+		);
+	}
+
+	// Compute journey status
+	let journeyStatusLabel = "";
+	const currentStopName = stops[currentStopIndex]?.name || "";
+	const nextStopName = stops[currentStopIndex + 1]?.name || "";
+	const endStopName = stops[stops.length - 1]?.name || "";
+
+	switch (status) {
+		case "Not Started":
+			journeyStatusLabel = `Ready to start from ${stops[0]?.name || ""}`;
+			break;
+		case "Ongoing":
+			journeyStatusLabel = `En route to ${nextStopName || endStopName}`;
+			break;
+		case "Reached":
+			journeyStatusLabel = `Arrived at ${currentStopName}`;
+			break;
+		case "Completed":
+			journeyStatusLabel = "Journey completed";
+			break;
+		case "Return Ongoing":
+			journeyStatusLabel = `Return journey to ${
+				nextStopName || endStopName
+			}`;
+			break;
+		case "Return Completed":
+			journeyStatusLabel = "Return journey completed";
+			break;
+		default:
+			journeyStatusLabel = "Unknown status";
+	}
+
+	// Calculate ETA to next stop
+	let ETA = "";
+	if (
+		driverLocation &&
+		currentStopIndex < stops.length &&
+		stops[currentStopIndex]
+	) {
+		const currentStop = stops[currentStopIndex];
+		if (currentStop.lat && currentStop.lng) {
+			const dist = haversineDistance(
+				driverLocation.lat,
+				driverLocation.lng,
+				currentStop.lat,
+				currentStop.lng
+			);
+			ETA = `${Math.round(dist)}m away`;
+		}
+	}
+
+	const returnJourneyEnabled = bus.returnJourney?.enabled || false;
+
+	return (
+		<div className="border rounded-lg overflow-hidden shadow-lg bg-white text-black">
+			<div className="flex">
+				{/* Left panel: Bus Details */}
+				<div className="flex flex-col gap-3 p-6 border-r min-w-[280px] bg-gray-50">
+					<div className="border-b pb-3">
+						<h2 className="text-2xl font-bold text-blue-600">
+							{bus.busNo}
+						</h2>
+						<p className="text-lg font-medium text-gray-700">
+							{bus.busName}
+						</p>
+					</div>
+
+					<div className="space-y-2 text-sm">
+						<p>
+							<span className="font-medium">Driver:</span>{" "}
+							{bus.driverName}
+						</p>
+						<p>
+							<span className="font-medium">Capacity:</span>{" "}
+							{bus.currLoad || 0} / {bus.capacity} passengers
+						</p>
+						<p>
+							<span className="font-medium">Route:</span>{" "}
+							{stops[0]?.name} → {endStopName}
+						</p>
+					</div>
+
+					<div className="border-t pt-3 space-y-2 text-xs text-gray-600">
+						<p>
+							<span className="font-medium">Status:</span>{" "}
+							{journeyStatusLabel}
+						</p>
+						<p>
+							<span className="font-medium">Current Stop:</span>{" "}
+							{currentStopName || "Not started"}
+						</p>
+						{ETA && (
+							<p>
+								<span className="font-medium">Distance:</span>{" "}
+								{ETA}
+							</p>
+						)}
+						<p>
+							<span className="font-medium">Last Updated:</span>{" "}
+							{lastUpdated
+								? lastUpdated.toLocaleTimeString()
+								: "No GPS signal"}
+						</p>
+					</div>
+				</div>
+
+				{/* Middle panel: Journey Controls */}
+				<div className="flex flex-col items-center justify-center px-8 py-6 gap-4 min-w-[200px]">
+					<div className="text-center">
+						<div className="text-lg font-semibold mb-2">
+							{status.replace(/([A-Z])/g, " $1").trim()}
+						</div>
+						<div className="text-sm text-gray-600">
+							{journeyStatusLabel}
+						</div>
+					</div>
+
+					<div className="space-y-3">
+						{status === "Not Started" && (
+							<button
+								className="bg-green-500 hover:bg-green-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+								onClick={handleStartJourney}>
+								Start Journey
+							</button>
+						)}
+
+						{status === "Reached" && !isReturn && (
+							<button
+								className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+								onClick={handleReachStop}>
+								Continue to Next Stop
+							</button>
+						)}
+
+						{status === "Completed" &&
+							returnJourneyEnabled &&
+							!isReturn && (
+								<button
+									className="bg-purple-500 hover:bg-purple-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+									onClick={handleStartReturnJourney}>
+									Start Return Journey
+								</button>
+							)}
+
+						{status === "Reached" && isReturn && (
+							<button
+								className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+								onClick={handleReachReturnStop}>
+								Continue Return Journey
+							</button>
+						)}
+					</div>
+				</div>
+
+				{/* Right panel: Map */}
+				<div
+					className="flex-1 relative"
+					style={{ minWidth: "400px", minHeight: "400px" }}>
+					<div
+						ref={mapContainer}
+						className="w-full h-full"
+						style={{ minHeight: "400px" }}
+					/>
+
+					{/* Map overlay with stop info */}
+					<div className="absolute top-4 right-4 bg-white bg-opacity-95 p-3 rounded-lg shadow-md text-xs max-w-xs">
+						<div className="space-y-1">
+							<div>
+								<strong>Next Stop:</strong>{" "}
+								{nextStopName || endStopName || "None"}
+							</div>
+							{ETA && (
+								<div>
+									<strong>Distance:</strong> {ETA}
+								</div>
+							)}
+							<div>
+								<strong>Final Stop:</strong> {endStopName}
+							</div>
+							{driverLocation && (
+								<div className="text-green-600">
+									<strong>GPS:</strong> Active
+								</div>
+							)}
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
 };
 
 export default BusInfo;

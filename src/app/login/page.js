@@ -23,6 +23,7 @@ const LoginPage = () => {
 					: null;
 			if (saved) {
 				const parsed = JSON.parse(saved);
+				isLoggedIn(true);
 				// Immediately redirect based on role if already logged in
 				if (parsed?.role === "admin") {
 					router.replace("/admin");
