@@ -39,41 +39,9 @@ export default function Home() {
 		return () =>
 			window.removeEventListener("authStateChanged", handleAuthChange);
 	}, []);
-
-	const quickActions = [
-		{
-			title: "Find Bus Routes",
-			description: "Browse all available bus routes and schedules",
-			icon: "🚌",
-			href: "/buses-routes",
-			color: "from-blue-500 to-blue-600",
-		},
-		{
-			title: "Nearby Buses",
-			description: "Find buses near your current location",
-			icon: "📍",
-			href: "/nearby-buses",
-			color: "from-green-500 to-green-600",
-		},
-		{
-			title: "Bus Stops",
-			description: "View all bus stops and their schedules",
-			icon: "🚏",
-			href: "/stops",
-			color: "from-purple-500 to-purple-600",
-		},
-		...(currentUser?.role === "admin"
-			? [
-				{
-					title: "Admin Dashboard",
-					description: "Manage your bus fleet and routes",
-					icon: "⚙️",
-					href: "/admin",
-					color: "from-orange-500 to-orange-600",
-				},
-			]
-			: []),
-	];
+	const handleBookRide = () => {
+		router.push("/book-ride");
+	};
 
 	return (
 		<div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
@@ -127,7 +95,7 @@ export default function Home() {
 							</div>
 
 							{/* Book Ride Button */}
-							<button className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-xl">
+							<button className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-xl" onClick={handleBookRide}>
 								Book Ride
 							</button>
 						</div>

@@ -82,77 +82,89 @@ const Navbar = () => {
 		setIsAdmin(false);
 		router.push("/");
 	};
-
-	const handleBusesRoutes = () => {
-		router.push("/buses-routes");
-	};
-
 	const handleHome = () => {
 		router.push("/");
 	};
 
-	const handleStops = () => {
-		router.push("/stops");
-	};
-
-	const handleNearbyBuses = () => {
-		router.push("/nearby-buses");
-	};
-
-	const handleAdminDashboard = () => {
-		router.push("/admin");
-	};
-
 	return (
-    <>
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          {/* Logo */}
-          <div className="flex items-center">
-            <div className="bg-gradient-to-r from-blue-500 to-cyan-400 text-white px-6 py-2 rounded-full font-bold text-lg">
-              TransitGo
-            </div>
-          </div>
-          
-          {/* Navigation */}
-          <nav className="hidden md:flex items-center space-x-8">
-            <a href="/AboutUs" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">About Us</a>
-            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">TransitGo Ads</a>
-            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Safety</a>
-            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Blog</a>
-            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Contact Us</a>
-          </nav>
-		
-			<div className="flex items-center gap-4">
-				{isLoggedIn ? (
-					<div className="flex items-center gap-3">
-						{/* Mobile user info */}
-						<div className="sm:hidden">
-							<span className="text-xs text-gray-300">
-								{currentUser?.name?.split(" ")[0]}
-								{isAdmin && (
-									<span className="ml-1 text-blue-400">
-										👑
-									</span>
-								)}
-							</span>
+		<>
+			<header className="bg-white shadow-sm">
+				<div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+					{/* Logo */}
+					<div className="flex items-center">
+						<div
+							className="bg-gradient-to-r from-blue-500 to-cyan-400 text-white px-6 py-2 rounded-full font-bold text-lg"
+							onClick={handleHome}>
+							TransitGo
 						</div>
-						<button
-							onClick={handleLogout}
-							className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md transition-colors cursor-pointer text-sm lg:text-base">
-							Logout
-						</button>
 					</div>
-				) : (
-					<button
-						onClick={handleLogin}
-						className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 lg:px-6 rounded-md transition-colors cursor-pointer text-sm lg:text-base">
-						Login
-					</button>
-				)}
-			</div>
-        </div>
-		</header>
+
+					{/* Navigation */}
+					<nav className="hidden md:flex items-center space-x-8">
+						<a
+							href="/AboutUs"
+							className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+							About Us
+						</a>
+						<a
+							href="#"
+							className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+							TransitGo Ads
+						</a>
+						<a
+							href="#"
+							className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+							Safety
+						</a>
+						<a
+							href="#"
+							className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+							Blog
+						</a>
+						<a
+							href="#"
+							className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+							Contact Us
+						</a>
+						{isAdmin && (
+							<a
+								href="/admin"
+								className="text-gray-700 hover:text-blue-600 font-medium transition-colors">
+								Admin Dashboard
+							</a>
+						)}
+					</nav>
+
+					<div className="flex items-center gap-4">
+						{isLoggedIn ? (
+							<div className="flex items-center gap-3">
+								{/* Mobile user info */}
+								<div className="sm:hidden">
+									<span className="text-xs text-gray-300">
+										{currentUser?.name?.split(" ")[0]}
+										{isAdmin && (
+											<span className="ml-1 text-blue-400">
+												👑
+											</span>
+										)}
+									</span>
+								</div>
+								<button
+									onClick={handleLogout}
+									className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md transition-colors cursor-pointer text-sm lg:text-base">
+									Logout
+								</button>
+							</div>
+						) : (
+							<button
+								onClick={handleLogin}
+								className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 lg:px-6 rounded-md transition-colors cursor-pointer text-sm lg:text-base">
+								Login
+							</button>
+						)}
+					</div>
+				</div>
+			</header>
 		</>
 	);
 };
