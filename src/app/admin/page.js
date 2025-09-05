@@ -1,10 +1,9 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { FaPlus, FaTimes } from "react-icons/fa";
-import BusInfo from "../components/BusInfo";
+import AdminBusPanel from "../components/AdminBusPanel";
 import { db } from "@/lib/firebase";
 import { collection, getDocs, query, where, doc, getDoc } from "firebase/firestore";
-// import MapView from "../components/MapView"; // TODO: Re-enable when Fleet View is re-implemented
 import AddBus from "../components/AddBus";
 import { useRouter } from "next/navigation";
 
@@ -317,7 +316,7 @@ const AdminPage = () => {
 						</div>
 					) : (
 						busIds.map((busId) => (
-							<BusInfo key={busId} busId={busId} />
+							<AdminBusPanel key={busId} busId={busId} />
 						))
 					)}
 				</div>

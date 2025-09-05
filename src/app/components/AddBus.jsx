@@ -16,6 +16,7 @@ import {
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { FaMapMarkerAlt } from "react-icons/fa";
+mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 const AddBus = ({ onSuccess }) => {
 	// Form state
@@ -86,6 +87,9 @@ const AddBus = ({ onSuccess }) => {
 	};
 
 	const updateMapWithStops = async () => {
+		// Guard: only update if map is open and mapRef.current exists
+		if (!mapRef.current || !showMapModal) return;
+
 		const stopsWithDetails = stops.map((stop) => ({
 			...stop,
 			lat: stop.lat ?? null,
@@ -197,6 +201,7 @@ const AddBus = ({ onSuccess }) => {
 			console.error("Error loading user:", err);
 		}
 	}, []);
+
 
 	//Fetch all stops from firestore
 	useEffect(() => {
@@ -342,11 +347,11 @@ const AddBus = ({ onSuccess }) => {
 		};
 	}, [showMapModal]);
 
-	// Update map when stops change
+	// Update map when stops or map modal changes (only if map is open and exists)
 	useEffect(() => {
 		updateMapWithStops();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [stops]);
+	}, [showMapModal, stops]);
 
 	const handleMapClick = async (e) => {
 		const { lng, lat } = e.lngLat;
@@ -497,19 +502,9 @@ const AddBus = ({ onSuccess }) => {
 				lng,
 			};
 
-			// Add new stop to Firestore if it does not exist
-			if (!match) {
-				const stopsRef = collection(db, "stops");
-				await addDoc(stopsRef, {
-					stopName: newStop.stopName,
-					lat,
-					lng,
-					buses: [],
-				});
-			}
-
+			// Do NOT add to Firestore here; only update local state.
 			setStops((prev) => [...prev, newStop]);
-			updateMapWithStops();
+			// updateMapWithStops(); // REMOVED: now handled by useEffect on [showMapModal, stops]
 
 			setStopPlace("");
 			setStopTime("");
@@ -560,10 +555,10 @@ const AddBus = ({ onSuccess }) => {
 
 		try {
 			setSubmitting(true);
-
 			const normalizedBusNo = busNo.trim().toUpperCase();
-
 			const busesRef = collection(db, "buses");
+
+			// Check duplicate bus number
 			const dupQuery = query(
 				busesRef,
 				where("busNo", "==", normalizedBusNo)
@@ -587,52 +582,98 @@ const AddBus = ({ onSuccess }) => {
 				busName: busName.trim(),
 				driverName: driverName.trim(),
 				capacity: parseInt(capacity),
-				currLoad: 0,
 				stops: busStops,
+				...(returnJourneyEnabled
+					? {
+							returnJourneyEnabled: true,
+							returnStartTime,
+					  }
+					: {
+							returnJourneyEnabled: false,
+							returnStartTime: "",
+					  }),
+				currLoad: 0,
 				status: {
 					current: "Not Started",
 					currentStopIndex: 0,
 					isReturn: false,
 				},
-				location: { lat: null, lng: null, lastUpdated: null },
+				location:
+					stops.length > 0 &&
+					stops[0].lat != null &&
+					stops[0].lng != null
+						? {
+								lat: stops[0].lat,
+								lng: stops[0].lng,
+								lastUpdated: null,
+						  }
+						: {
+								lat: null,
+								lng: null,
+								lastUpdated: null,
+						  },
 				createdAt: serverTimestamp(),
 				createdBy: currentUser.email,
 			};
 
+			// ADD NEW BUS
 			const newBusDoc = await addDoc(busesRef, busPayload);
-
+			const busDocId = newBusDoc.id;
+			// Add bus to admin user
 			const usersRef = collection(db, "users");
 			const adminQuery = query(
 				usersRef,
 				where("email", "==", currentUser.email)
 			);
 			const adminSnap = await getDocs(adminQuery);
-
 			if (!adminSnap.empty) {
 				const adminDocRef = doc(db, "users", adminSnap.docs[0].id);
 				await updateDoc(adminDocRef, {
-					buses: arrayUnion(newBusDoc.id),
+					buses: arrayUnion(busDocId),
 				});
 			}
 
 			// 🔑 Sync stops collection
 			for (const stop of stops) {
-				// Find stop details in allStops
-				const stopDetails = allStops.find(
-					(s) => s.stopId === stop.stopId
-				);
-				const stopsRef = collection(db, "stops");
-				if (stopDetails) {
-					const stopDocRef = doc(db, "stops", stopDetails.stopId);
+				let stopDocId = stop.stopId;
+				let stopExists = false;
+				// Check if stop exists in Firestore (by stopId)
+				const stopMatch = allStops.find((s) => s.stopId === stop.stopId);
+				if (stopMatch) {
+					stopExists = true;
+				} else {
+					// Try by stopName (case-insensitive)
+					const byName = allStops.find(
+						(s) =>
+							s.stopName.trim().toLowerCase() ===
+							stop.stopName.trim().toLowerCase()
+					);
+					if (byName) {
+						stopExists = true;
+						stopDocId = byName.stopId;
+					}
+				}
+				if (!stopExists) {
+					// Add stop to Firestore, include stopId
+					const stopsRef = collection(db, "stops");
+					const stopDoc = await addDoc(stopsRef, {
+						stopId: stop.stopId,
+						stopName: stop.stopName,
+						lat: stop.lat,
+						lng: stop.lng,
+						buses: [busDocId],
+					});
+					stopDocId = stopDoc.id;
+				} else {
+					// Update buses array for existing stop
+					const stopDocRef = doc(db, "stops", stopDocId);
 					await updateDoc(stopDocRef, {
-						buses: arrayUnion(newBusDoc.id),
+						buses: arrayUnion(busDocId),
 					});
 				}
-				// If not found, do not create new stop here (since we don't have lat/lng)
 			}
 
 			setSuccess("Bus added successfully!");
-
 			setBusNo("");
 			setBusName("");
 			setDriverName("");
@@ -640,7 +681,6 @@ const AddBus = ({ onSuccess }) => {
 			setReturnJourneyEnabled(false);
 			setReturnStartTime("");
 			setStops([]);
-
 			if (onSuccess) {
 				setTimeout(() => onSuccess(), 1500);
 			}
@@ -1035,9 +1075,9 @@ const AddBus = ({ onSuccess }) => {
 									Adding Bus...
 								</span>
 							) : (
-								`Add Bus ${
+								`Add Bus${
 									stops.length >= 2
-										? `(${stops.length} stops)`
+										? ` (${stops.length} stops)`
 										: ""
 								}`
 							)}
