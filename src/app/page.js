@@ -8,6 +8,9 @@ export default function Home() {
 	const [currentUser, setCurrentUser] = useState(null);
 	const [isLoggedIn, setIsLoggedIn] = useState(false);
 
+	const [pickupLocation, setPickupLocation] = useState('');
+	const [dropLocation, setDropLocation] = useState('');
+
 	useEffect(() => {
 		const checkAuth = () => {
 			try {
@@ -61,19 +64,79 @@ export default function Home() {
 		},
 		...(currentUser?.role === "admin"
 			? [
-					{
-						title: "Admin Dashboard",
-						description: "Manage your bus fleet and routes",
-						icon: "⚙️",
-						href: "/admin",
-						color: "from-orange-500 to-orange-600",
-					},
-			  ]
+				{
+					title: "Admin Dashboard",
+					description: "Manage your bus fleet and routes",
+					icon: "⚙️",
+					href: "/admin",
+					color: "from-orange-500 to-orange-600",
+				},
+			]
 			: []),
 	];
 
 	return (
 		<div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
+			<main className="relative overflow-hidden">
+				{/* Background Pattern */}
+				<div className="absolute inset-0 opacity-5">
+					<div className="absolute top-20 left-10 w-32 h-32 bg-blue-400 rounded-full"></div>
+					<div className="absolute top-40 right-20 w-24 h-24 bg-cyan-400 rounded-full"></div>
+					<div className="absolute bottom-40 left-1/4 w-20 h-20 bg-emerald-400 rounded-full"></div>
+					<div className="absolute bottom-20 right-1/3 w-16 h-16 bg-blue-400 rounded-full"></div>
+				</div>
+
+				<div className="relative max-w-4xl mx-auto px-6 py-20 text-center">
+					{/* Main Heading */}
+					<h1 className="text-4xl md:text-6xl font-bold text-gray-800 mb-12 leading-tight">
+						India Moves On{' '}
+						<span className="bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
+							TransitGo!
+						</span>
+					</h1>
+
+					{/* Booking Form */}
+					<div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-auto border border-gray-100">
+						<div className="space-y-4">
+							{/* Pickup Location */}
+							<div className="relative">
+								<div className="absolute left-4 top-1/2 transform -translate-y-1/2">
+									<div className="w-3 h-3 bg-emerald-500 rounded-full"></div>
+								</div>
+								<input
+									type="text"
+									placeholder="Enter Pickup Location"
+									value={pickupLocation}
+									onChange={(e) => setPickupLocation(e.target.value)}
+									className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
+								/>
+							</div>
+
+							{/* Drop Location */}
+							<div className="relative">
+								<div className="absolute left-4 top-1/2 transform -translate-y-1/2">
+									<div className="w-3 h-3 bg-red-500 rounded-full"></div>
+								</div>
+								<input
+									type="text"
+									placeholder="Enter Drop Location"
+									value={dropLocation}
+									onChange={(e) => setDropLocation(e.target.value)}
+									className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
+								/>
+							</div>
+
+							{/* Book Ride Button */}
+							<button className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-xl">
+								Book Ride
+							</button>
+						</div>
+					</div>
+
+				</div>
+
+
+			</main>
 			{/* Hero Section */}
 			<div className="relative overflow-hidden bg-white">
 				<div className="max-w-7xl mx-auto">

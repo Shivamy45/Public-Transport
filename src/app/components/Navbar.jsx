@@ -104,57 +104,25 @@ const Navbar = () => {
 	};
 
 	return (
-		<div className="flex justify-between items-center p-4 bg-black/50 backdrop-blur-sm sticky top-0 w-full shadow-md z-50">
-			<div className="flex items-center gap-4">
-				<h1
-					className="text-2xl font-bold cursor-pointer hover:text-yellow-500 transition-colors"
-					onClick={handleHome}>
-					TrackIt
-				</h1>
-				{isLoggedIn && currentUser && (
-					<div className="hidden sm:block">
-						<span className="text-sm text-gray-300">
-							Welcome,{" "}
-							<span className="font-medium text-white">
-								{currentUser.name}
-							</span>
-							{isAdmin && (
-								<span className="ml-2 px-2 py-0.5 bg-blue-500 text-white text-xs rounded-full">
-									Admin
-								</span>
-							)}
-						</span>
-					</div>
-				)}
-			</div>
-
-			<nav>
-				<ul className="flex items-center gap-6 lg:gap-10">
-					<li
-						onClick={handleBusesRoutes}
-						className="cursor-pointer hover:text-blue-400 transition-colors text-sm lg:text-base">
-						Bus Routes
-					</li>
-					<li
-						onClick={handleStops}
-						className="cursor-pointer hover:text-blue-400 transition-colors text-sm lg:text-base">
-						Stops
-					</li>
-					<li
-						onClick={handleNearbyBuses}
-						className="cursor-pointer hover:text-blue-400 transition-colors text-sm lg:text-base">
-						Nearby
-					</li>
-					{isAdmin && (
-						<li
-							onClick={handleAdminDashboard}
-							className="cursor-pointer hover:text-blue-400 transition-colors text-sm lg:text-base font-medium">
-							Dashboard
-						</li>
-					)}
-				</ul>
-			</nav>
-
+    <>
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          {/* Logo */}
+          <div className="flex items-center">
+            <div className="bg-gradient-to-r from-blue-500 to-cyan-400 text-white px-6 py-2 rounded-full font-bold text-lg">
+              TransitGo
+            </div>
+          </div>
+          
+          {/* Navigation */}
+          <nav className="hidden md:flex items-center space-x-8">
+            <a href="/AboutUs" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">About Us</a>
+            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">TransitGo Ads</a>
+            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Safety</a>
+            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Blog</a>
+            <a href="#" className="text-gray-700 hover:text-blue-600 font-medium transition-colors">Contact Us</a>
+          </nav>
+		
 			<div className="flex items-center gap-4">
 				{isLoggedIn ? (
 					<div className="flex items-center gap-3">
@@ -183,7 +151,9 @@ const Navbar = () => {
 					</button>
 				)}
 			</div>
-		</div>
+        </div>
+		</header>
+		</>
 	);
 };
 
