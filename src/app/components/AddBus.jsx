@@ -132,12 +132,16 @@ const AddBus = ({ onSuccess }) => {
 			style: "mapbox://styles/mapbox/streets-v11",
 			center,
 			zoom: 12,
+			interactive: true
 		});
+		// Set crosshair cursor for map for adding stops
+		mapRef.current.getCanvas().style.cursor = "crosshair";
+
+		// Add click handler for adding stops from map immediately after map creation
+		mapRef.current.on("click", handleMapClick);
 
 		mapRef.current.on("load", () => {
 			updateMapWithStops();
-			// Add click handler for adding stops from map
-			mapRef.current.on("click", handleMapClick);
 		});
 
 		return () => {
@@ -289,12 +293,11 @@ const AddBus = ({ onSuccess }) => {
 	};
 
 	const handleMapClick = async (e) => {
-		if (!isAddingFromMap) return;
-
+		if (!isAddingFromMap) return; 
+		console.log("is clicked on ", e.lngLat)
 		const { lng, lat } = e.lngLat;
 		setMapClickLocation({ lat, lng });
 
-		// Reverse geocode to get place name
 		try {
 			const response = await fetch(
 				`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
@@ -302,8 +305,7 @@ const AddBus = ({ onSuccess }) => {
 			const data = await response.json();
 
 			if (data.features && data.features.length > 0) {
-				const placeName = data.features[0].place_name;
-				setStopPlace(placeName);
+				setStopPlace(data.features[0].place_name);
 			} else {
 				setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
 			}
@@ -312,12 +314,13 @@ const AddBus = ({ onSuccess }) => {
 			setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
 		}
 
-		// Require user to enter time manually
+		// Reset time so user must add it manually
 		setStopTime("");
+
 		// Close the map modal immediately
 		setShowMapModal(false);
-		// Exit add-from-map mode
-		setIsAddingFromMap(false);
+
+		// Do NOT reset isAddingFromMap here, keep it true until stop is confirmed
 	};
 
 	// Helper function to convert time string to minutes since midnight
@@ -405,7 +408,10 @@ const AddBus = ({ onSuccess }) => {
 		}
 
 		if (!stopTime) {
-			setError("Please select a stop time.");
+			const errorMessage = isAddingFromMap 
+				? "Please enter a stop time to confirm the location from the map."
+				: "Please select a stop time.";
+			setError(errorMessage);
 			return;
 		}
 
@@ -483,11 +489,15 @@ const AddBus = ({ onSuccess }) => {
 
 			setStops((prevStops) => [...prevStops, newStop]);
 
-			// Reset form
+			// Reset form and map state
 			setStopPlace("");
 			setStopTime("");
 			setStopSuggestions([]);
 			setSelectedStop(null);
+			setMapClickLocation(null);
+
+			// Exit "Add from Map" mode after successful addition
+			setIsAddingFromMap(false);
 		} catch (err) {
 			console.error("Error adding stop:", err);
 			setError("Failed to add stop. Please try again.");
@@ -794,6 +804,11 @@ const AddBus = ({ onSuccess }) => {
 						<div>
 							<label className="block text-sm font-medium text-gray-700 mb-2">
 								Stop Name
+								{mapClickLocation && (
+									<span className="ml-2 inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+										📍 From Map
+									</span>
+								)}
 							</label>
 							<div className="relative">
 								<input
@@ -803,7 +818,11 @@ const AddBus = ({ onSuccess }) => {
 										setStopPlace(e.target.value);
 										setSelectedStop(null);
 									}}
-									className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
+									className={`w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 text-gray-900 ${
+										mapClickLocation 
+											? "border-green-300 focus:ring-green-500 bg-green-50" 
+											: "border-gray-300 focus:ring-blue-500"
+									}`}
 									placeholder="e.g., Main Street, Central Station"
 									autoComplete="off"
 								/>
@@ -842,12 +861,22 @@ const AddBus = ({ onSuccess }) => {
 						<div>
 							<label className="block text-sm font-medium text-gray-700 mb-2">
 								Stop Time
+								{isAddingFromMap && mapClickLocation && (
+									<span className="ml-2 inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+										⚠️ Required
+									</span>
+								)}
 							</label>
 							<input
 								type="time"
 								value={stopTime}
 								onChange={(e) => setStopTime(e.target.value)}
-								className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
+								className={`w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 text-gray-900 ${
+									isAddingFromMap && mapClickLocation && !stopTime
+										? "border-yellow-300 focus:ring-yellow-500 bg-yellow-50" 
+										: "border-gray-300 focus:ring-blue-500"
+								}`}
+								required={isAddingFromMap && mapClickLocation}
 							/>
 						</div>
 					</div>
@@ -1083,66 +1112,6 @@ const AddBus = ({ onSuccess }) => {
 								className="w-full h-full"
 								style={{ height: "calc(80vh - 80px)" }}
 							/>
-
-							{/* Map Legend */}
-							<div className="absolute top-4 left-4 bg-white bg-opacity-95 p-3 rounded-lg shadow-md text-xs">
-								<h4 className="font-medium text-gray-900 mb-2">
-									Legend
-								</h4>
-								<div className="space-y-1">
-									<div className="flex items-center gap-2">
-										<div className="w-3 h-3 bg-green-500 rounded-full"></div>
-										<span>Start Stop</span>
-									</div>
-									<div className="flex items-center gap-2">
-										<div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-										<span>Middle Stops</span>
-									</div>
-									<div className="flex items-center gap-2">
-										<div className="w-3 h-3 bg-red-500 rounded-full"></div>
-										<span>End Stop</span>
-									</div>
-									<div className="flex items-center gap-2">
-										<div className="w-4 h-1 bg-blue-500 rounded"></div>
-										<span>Route Path</span>
-									</div>
-								</div>
-								{isAddingFromMap && (
-									<div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
-										<p className="text-yellow-800 font-medium">
-											Click anywhere on the map to add a
-												stop
-										</p>
-									</div>
-								)}
-							</div>
-
-							{/* Map Instructions */}
-							{stops.length === 0 && (
-								<div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90">
-									<div className="text-center">
-										<svg
-											className="mx-auto h-12 w-12 text-gray-400"
-											fill="none"
-											viewBox="0 0 24 24"
-											stroke="currentColor">
-											<path
-												strokeLinecap="round"
-												strokeLinejoin="round"
-												strokeWidth={2}
-												d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"
-											/>
-										</svg>
-										<h3 className="mt-2 text-lg font-medium text-gray-900">
-											Add Your First Stop
-										</h3>
-										<p className="mt-1 text-sm text-gray-500">
-											Use the text form or click "Add from
-												Map" to place stops on the route
-										</p>
-									</div>
-								</div>
-							)}
 						</div>
 					</div>
 				</div>
