@@ -11,74 +11,81 @@ mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 export default function Home() {
 	const router = useRouter();
+	// --- State for authentication and user info ---
 	const [currentUser, setCurrentUser] = useState(null);
 	const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-	const [pickupLocation, setPickupLocation] = useState('');
-	const [dropLocation, setDropLocation] = useState('');
-
-	const [stops, setStops] = useState([]);
-	const [selectedPickupStop, setSelectedPickupStop] = useState(null);
-	const [selectedDropStop, setSelectedDropStop] = useState(null);
-	// Fetch stops from Firestore on mount
-	useEffect(() => {
-		async function fetchStops() {
-			try {
-				const querySnapshot = await getDocs(collection(db, "stops"));
-				const stopsData = querySnapshot.docs.map(doc => ({
-					stopId: doc.id,
-					...doc.data(),
-				}));
-				setStops(stopsData);
-			} catch (err) {
-				console.error("Failed to fetch stops", err);
-			}
-		}
-		fetchStops();
-	}, []);
-
-	const [pickupSuggestions, setPickupSuggestions] = useState([]);
-	const [dropSuggestions, setDropSuggestions] = useState([]);
+	// --- State for stops, selections, map modals, and geolocation ---
+	const [stops, setStops] = useState([]); // All Firestore stops
+	const [pickupLocation, setPickupLocation] = useState(""); // Pickup input value
+	const [dropLocation, setDropLocation] = useState(""); // Drop input value
+	const [pickupSuggestions, setPickupSuggestions] = useState([]); // Filtered pickup suggestions
+	const [dropSuggestions, setDropSuggestions] = useState([]); // Filtered drop suggestions
+	const [selectedPickupStop, setSelectedPickupStop] = useState(null); // Selected pickup stop object
+	const [selectedDropStop, setSelectedDropStop] = useState(null); // Selected drop stop object
 	const [showPickupMap, setShowPickupMap] = useState(false);
 	const [showDropMap, setShowDropMap] = useState(false);
-	const [userCoords, setUserCoords] = useState(null);
+	const [userCoords, setUserCoords] = useState(null); // User's geolocation
 
+	// --- Refs for Mapbox map instances and containers ---
 	const pickupMapRef = useRef(null);
 	const dropMapRef = useRef(null);
 	const pickupMapInstance = useRef(null);
 	const dropMapInstance = useRef(null);
 
+	// --- Fetch all stops from Firestore on mount ---
+	useEffect(() => {
+		let isMounted = true;
+		async function fetchStops() {
+			try {
+				const querySnapshot = await getDocs(collection(db, "stops"));
+				const stopsData = querySnapshot.docs.map((doc) => ({
+					stopId: doc.id,
+					...doc.data(),
+				}));
+				if (isMounted) {
+					setStops(stopsData);
+					console.log("Main page fetched stops:", stopsData);
+				}
+			} catch (err) {
+				console.error("Failed to fetch stops", err);
+			}
+		}
+		fetchStops();
+		return () => {
+			isMounted = false;
+		};
+	}, []);
+	
+	// --- Sync authentication state from localStorage ---
 	useEffect(() => {
 		const checkAuth = () => {
 			try {
 				const saved =
-					typeof window !== "undefined"
-						? localStorage.getItem("currentUser")
-						: null;
+				typeof window !== "undefined"
+				? localStorage.getItem("currentUser")
+				: null;
 				if (saved) {
 					const user = JSON.parse(saved);
 					setCurrentUser(user);
 					setIsLoggedIn(true);
+				} else {
+					setCurrentUser(null);
+					setIsLoggedIn(false);
 				}
 			} catch (err) {
 				console.error("Error checking auth:", err);
 			}
 		};
-
 		checkAuth();
-
-		// Listen for auth changes
-		const handleAuthChange = () => {
-			checkAuth();
-		};
-
+		const handleAuthChange = () => checkAuth();
 		window.addEventListener("authStateChanged", handleAuthChange);
 		return () =>
 			window.removeEventListener("authStateChanged", handleAuthChange);
 	}, []);
-
+	
+	// --- Get user geolocation on mount ---
 	useEffect(() => {
-		// Get user geolocation
 		if (navigator.geolocation) {
 			navigator.geolocation.getCurrentPosition(
 				(position) => {
@@ -95,105 +102,152 @@ export default function Home() {
 			setUserCoords(null);
 		}
 	}, []);
+	
+	// --- Suggestion logic: filter stops for pickup/drop inputs ---
+	const handlePickupChange = (e) => {
+		const value = e.target.value;
+		setPickupLocation(value);
+		if (value.length > 0) {
+			const filtered = stops.filter((stop) =>
+				stop.stopName.toLowerCase().includes(value.toLowerCase())
+		);
+		console.log("Main page pickup suggestions for:", value, "found:", filtered);
+		setPickupSuggestions(filtered);
+	} else {
+		setPickupSuggestions([]);
+	}
+};
+const handleDropChange = (e) => {
+	const value = e.target.value;
+	setDropLocation(value);
+	if (value.length > 0) {
+		const filtered = stops.filter((stop) =>
+			stop.stopName.toLowerCase().includes(value.toLowerCase())
+	);
+	console.log("Main page drop suggestions for:", value, "found:", filtered);
+	setDropSuggestions(filtered);
+} else {
+	setDropSuggestions([]);
+}
+};
 
-	// Show stops as markers on pickup map; handle marker selection
-	useEffect(() => {
-		if (showPickupMap && pickupMapRef.current && !pickupMapInstance.current) {
-			pickupMapInstance.current = new mapboxgl.Map({
-				container: pickupMapRef.current,
-				style: "mapbox://styles/mapbox/streets-v11",
-				center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
-				zoom: userCoords ? 12 : 3,
-			});
+// --- Select stop from suggestion list for pickup/drop ---
+const selectPickup = (stop) => {
+	setPickupLocation(stop.stopName);
+	setSelectedPickupStop(stop);
+	setPickupSuggestions([]);
+};
+const selectDrop = (stop) => {
+	setDropLocation(stop.stopName);
+	setSelectedDropStop(stop);
+	setDropSuggestions([]);
+};
+
+// --- Map rendering and marker logic for pickup/drop ---
+// Helper for rendering markers and cleanup for both maps
+const renderMapMarkers = (map, stopsArr, selectedStop, setSelectedStop, colorClass, ringClass) => {
+	// Remove previous markers
+	if (map._stopMarkers) {
+		map._stopMarkers.forEach((m) => m.remove());
+	}
+	const markers = [];
+	stopsArr.forEach((stop) => {
+		const markerEl = document.createElement("div");
+		const isSelected = selectedStop && selectedStop.stopId === stop.stopId;
+		markerEl.className =
+		"w-4 h-4 rounded-full border-2 border-white cursor-pointer " +
+		(isSelected ? `${colorClass} ${ringClass} scale-125` : colorClass.replace("800", "600"));
+		markerEl.title = stop.stopName;
+		const marker = new mapboxgl.Marker(markerEl)
+		.setLngLat([stop.lng, stop.lat])
+		.addTo(map);
+		marker.getElement().addEventListener("click", () => setSelectedStop(stop));
+		markers.push(marker);
+	});
+	map._stopMarkers = markers;
+};
+
+// Generic effect for both pickup and drop map modals
+useEffect(() => {
+	// Pickup Map logic
+	if (showPickupMap && pickupMapRef.current && !pickupMapInstance.current) {
+		pickupMapInstance.current = new mapboxgl.Map({
+			container: pickupMapRef.current,
+			style: "mapbox://styles/mapbox/streets-v11",
+			center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
+			zoom: userCoords ? 12 : 3,
+		});
+	}
+	if (showPickupMap && pickupMapInstance.current) {
+		renderMapMarkers(
+			pickupMapInstance.current,
+			stops,
+			selectedPickupStop,
+			setSelectedPickupStop,
+			"bg-blue-800 ring-2 ring-blue-500",
+			"ring-2 ring-blue-500"
+		);
+	}
+	if (!showPickupMap && pickupMapInstance.current) {
+		if (pickupMapInstance.current._stopMarkers) {
+			pickupMapInstance.current._stopMarkers.forEach((m) => m.remove());
+			delete pickupMapInstance.current._stopMarkers;
 		}
-		// Add stop markers when map and stops are ready
-		if (showPickupMap && pickupMapInstance.current) {
-			// Clear previous markers
-			if (pickupMapInstance.current._stopMarkers) {
-				pickupMapInstance.current._stopMarkers.forEach(m => m.remove());
-			}
-			const markers = [];
-			stops.forEach(stop => {
-				const markerEl = document.createElement("div");
-				const isSelected = selectedPickupStop && selectedPickupStop.stopId === stop.stopId;
-				markerEl.className =
-					"w-4 h-4 rounded-full border-2 border-white cursor-pointer " +
-					(isSelected
-						? "bg-blue-800 ring-2 ring-blue-500 scale-125"
-						: "bg-blue-600");
-				markerEl.title = stop.stopName;
-				const marker = new mapboxgl.Marker(markerEl)
-					.setLngLat([stop.lng, stop.lat])
-					.addTo(pickupMapInstance.current);
-				marker.getElement().addEventListener("click", () => {
-					setSelectedPickupStop(stop);
-				});
-				markers.push(marker);
-			});
-			pickupMapInstance.current._stopMarkers = markers;
+		pickupMapInstance.current.remove();
+		pickupMapInstance.current = null;
+		// Optionally retain selection: setSelectedPickupStop(null);
+	}
+	// Drop Map logic
+	if (showDropMap && dropMapRef.current && !dropMapInstance.current) {
+		dropMapInstance.current = new mapboxgl.Map({
+			container: dropMapRef.current,
+			style: "mapbox://styles/mapbox/streets-v11",
+			center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
+			zoom: userCoords ? 12 : 3,
+		});
+	}
+	if (showDropMap && dropMapInstance.current) {
+		renderMapMarkers(
+			dropMapInstance.current,
+			stops,
+			selectedDropStop,
+			setSelectedDropStop,
+			"bg-red-800 ring-2 ring-red-500",
+			"ring-2 ring-red-500"
+		);
+	}
+	if (!showDropMap && dropMapInstance.current) {
+		if (dropMapInstance.current._stopMarkers) {
+			dropMapInstance.current._stopMarkers.forEach((m) => m.remove());
+			delete dropMapInstance.current._stopMarkers;
 		}
-		// Cleanup pickup map on modal close
-		if (!showPickupMap && pickupMapInstance.current) {
-			// Remove markers
+		dropMapInstance.current.remove();
+		dropMapInstance.current = null;
+		// Optionally retain selection: setSelectedDropStop(null);
+	}
+	// Cleanup on component unmount
+	return () => {
+		if (pickupMapInstance.current) {
 			if (pickupMapInstance.current._stopMarkers) {
-				pickupMapInstance.current._stopMarkers.forEach(m => m.remove());
+				pickupMapInstance.current._stopMarkers.forEach((m) => m.remove());
 				delete pickupMapInstance.current._stopMarkers;
 			}
 			pickupMapInstance.current.remove();
 			pickupMapInstance.current = null;
-			setSelectedPickupStop(null);
 		}
-		// Re-run when stops or selection changes
-	}, [showPickupMap, userCoords, stops, selectedPickupStop]);
-
-	// Show stops as markers on drop map; handle marker selection
-	useEffect(() => {
-		if (showDropMap && dropMapRef.current && !dropMapInstance.current) {
-			dropMapInstance.current = new mapboxgl.Map({
-				container: dropMapRef.current,
-				style: "mapbox://styles/mapbox/streets-v11",
-				center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
-				zoom: userCoords ? 12 : 3,
-			});
-		}
-		// Add stop markers when map and stops are ready
-		if (showDropMap && dropMapInstance.current) {
+		if (dropMapInstance.current) {
 			if (dropMapInstance.current._stopMarkers) {
-				dropMapInstance.current._stopMarkers.forEach(m => m.remove());
-			}
-			const markers = [];
-			stops.forEach(stop => {
-				const markerEl = document.createElement("div");
-				const isSelected = selectedDropStop && selectedDropStop.stopId === stop.stopId;
-				markerEl.className =
-					"w-4 h-4 rounded-full border-2 border-white cursor-pointer " +
-					(isSelected
-						? "bg-red-800 ring-2 ring-red-500 scale-125"
-						: "bg-red-600");
-				markerEl.title = stop.stopName;
-				const marker = new mapboxgl.Marker(markerEl)
-					.setLngLat([stop.lng, stop.lat])
-					.addTo(dropMapInstance.current);
-				marker.getElement().addEventListener("click", () => {
-					setSelectedDropStop(stop);
-				});
-				markers.push(marker);
-			});
-			dropMapInstance.current._stopMarkers = markers;
-		}
-		// Cleanup drop map on modal close
-		if (!showDropMap && dropMapInstance.current) {
-			if (dropMapInstance.current._stopMarkers) {
-				dropMapInstance.current._stopMarkers.forEach(m => m.remove());
+				dropMapInstance.current._stopMarkers.forEach((m) => m.remove());
 				delete dropMapInstance.current._stopMarkers;
 			}
 			dropMapInstance.current.remove();
 			dropMapInstance.current = null;
-			setSelectedDropStop(null);
 		}
-	}, [showDropMap, userCoords, stops, selectedDropStop]);
+		};
+	// eslint-disable-next-line
+	}, [showPickupMap, showDropMap, userCoords, stops, selectedPickupStop, selectedDropStop]);
 
-	// Handler for selecting pickup stop from modal
+	// --- Handler for selecting pickup stop from modal ---
 	const handlePickupMapSelect = () => {
 		if (selectedPickupStop) {
 			setPickupLocation(selectedPickupStop.stopName);
@@ -201,8 +255,7 @@ export default function Home() {
 			setShowPickupMap(false);
 		}
 	};
-
-	// Handler for selecting drop stop from modal
+	// --- Handler for selecting drop stop from modal ---
 	const handleDropMapSelect = () => {
 		if (selectedDropStop) {
 			setDropLocation(selectedDropStop.stopName);
@@ -211,55 +264,21 @@ export default function Home() {
 		}
 	};
 
-	const handlePickupChange = async (e) => {
-		setPickupLocation(e.target.value);
-		if (e.target.value.length > 2) {
-			try {
-				const res = await fetch(
-					`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
-						e.target.value
-					)}.json?${userCoords ? `proximity=${userCoords.lng},${userCoords.lat}&` : ""}access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
-				);
-				const data = await res.json();
-				setPickupSuggestions(data.features || []);
-			} catch {
-				setPickupSuggestions([]);
-			}
-		} else {
-			setPickupSuggestions([]);
-		}
-	};
-	const handleDropChange = async (e) => {
-		setDropLocation(e.target.value);
-		if (e.target.value.length > 2) {
-			try {
-				const res = await fetch(
-					`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
-						e.target.value
-					)}.json?${userCoords ? `proximity=${userCoords.lng},${userCoords.lat}&` : ""}access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
-				);
-				const data = await res.json();
-				setDropSuggestions(data.features || []);
-			} catch {
-				setDropSuggestions([]);
-			}
-		} else {
-			setDropSuggestions([]);
-		}
-	};
-	const selectPickup = (s) => {
-		setPickupLocation(s.place_name);
-		setPickupSuggestions([]);
-	};
-	const selectDrop = (s) => {
-		setDropLocation(s.place_name);
-		setDropSuggestions([]);
-	};
-
+	// --- Show Buses: only trigger when valid stops are selected ---
 	const handleShowBuses = () => {
+		if (
+			!selectedPickupStop ||
+			!selectedDropStop ||
+			selectedPickupStop.stopId === selectedDropStop.stopId
+		) {
+			alert("Please select both a valid pickup and drop stop (they cannot be the same).");
+			return;
+		}
 		const query = new URLSearchParams({
-			pickup: pickupLocation,
-			drop: dropLocation,
+			pickupId: selectedPickupStop.stopId,
+			pickupName: selectedPickupStop.stopName,
+			dropId: selectedDropStop.stopId,
+			dropName: selectedDropStop.stopName,
 		}).toString();
 		router.push(`/buses?${query}`);
 	};
@@ -306,14 +325,15 @@ export default function Home() {
 									aria-label="Pick pickup location on map">
 									<MdMyLocation color="black" />
 								</button>
+								{/* Pickup stop suggestions filtered from Firestore stops */}
 								{pickupSuggestions.length > 0 && (
 									<ul className="absolute z-10 bg-white border border-gray-300 rounded-md w-full max-h-48 overflow-y-auto mt-1 text-left">
 										{pickupSuggestions.map((s) => (
 											<li
-												key={s.id}
+												key={s.stopId}
 												className="px-4 py-2 hover:bg-blue-100 cursor-pointer"
 												onClick={() => selectPickup(s)}>
-												{s.place_name}
+												{s.stopName}
 											</li>
 										))}
 									</ul>
@@ -339,14 +359,15 @@ export default function Home() {
 									aria-label="Pick drop location on map">
 									<MdMyLocation color="black" />
 								</button>
+								{/* Drop stop suggestions filtered from Firestore stops */}
 								{dropSuggestions.length > 0 && (
 									<ul className="absolute z-10 bg-white border border-gray-300 rounded-md w-full max-h-48 overflow-y-auto mt-1 text-left">
 										{dropSuggestions.map((s) => (
 											<li
-												key={s.id}
+												key={s.stopId}
 												className="px-4 py-2 hover:bg-blue-100 cursor-pointer"
 												onClick={() => selectDrop(s)}>
-												{s.place_name}
+												{s.stopName}
 											</li>
 										))}
 									</ul>
@@ -359,10 +380,6 @@ export default function Home() {
 								onClick={handleShowBuses}>
 								Show Buses
 							</button>
-						
-							
-						
-						
 						</div>
 					</div>
 				</div>
@@ -380,23 +397,27 @@ export default function Home() {
 								<div
 									id="pickupMap"
 									ref={pickupMapRef}
-									className="w-full h-full"
-								></div>
-								{/* List stops for reference */}
+									className="w-full h-full"></div>
+								{/* List stops for reference (clickable, synced with markers) */}
 								<div className="absolute left-2 top-2 bg-white bg-opacity-90 rounded shadow p-2 z-30 max-h-40 overflow-y-auto">
-									<div className="font-semibold mb-1 text-sm">Select a Pickup Stop:</div>
+									<div className="font-semibold mb-1 text-sm">
+										Select a Pickup Stop:
+									</div>
 									<ul>
-										{stops.map(stop => (
+										{stops.map((stop) => (
 											<li
 												key={stop.stopId}
 												className={
 													"text-xs px-2 py-1 rounded cursor-pointer " +
-													(selectedPickupStop && selectedPickupStop.stopId === stop.stopId
+													(selectedPickupStop &&
+													selectedPickupStop.stopId ===
+														stop.stopId
 														? "bg-blue-100 font-bold"
 														: "hover:bg-blue-50")
 												}
-												onClick={() => setSelectedPickupStop(stop)}
-											>
+												onClick={() =>
+													setSelectedPickupStop(stop)
+												}>
 												{stop.stopName}
 											</li>
 										))}
@@ -412,8 +433,7 @@ export default function Home() {
 											: "bg-gray-300 text-gray-500 cursor-not-allowed")
 									}
 									onClick={handlePickupMapSelect}
-									disabled={!selectedPickupStop}
-								>
+									disabled={!selectedPickupStop}>
 									Select
 								</button>
 							</div>
@@ -434,23 +454,27 @@ export default function Home() {
 								<div
 									id="dropMap"
 									ref={dropMapRef}
-									className="w-full h-full"
-								></div>
-								{/* List stops for reference */}
+									className="w-full h-full"></div>
+								{/* List stops for reference (clickable, synced with markers) */}
 								<div className="absolute left-2 top-2 bg-white bg-opacity-90 rounded shadow p-2 z-30 max-h-40 overflow-y-auto">
-									<div className="font-semibold mb-1 text-sm">Select a Drop Stop:</div>
+									<div className="font-semibold mb-1 text-sm">
+										Select a Drop Stop:
+									</div>
 									<ul>
-										{stops.map(stop => (
+										{stops.map((stop) => (
 											<li
 												key={stop.stopId}
 												className={
 													"text-xs px-2 py-1 rounded cursor-pointer " +
-													(selectedDropStop && selectedDropStop.stopId === stop.stopId
+													(selectedDropStop &&
+													selectedDropStop.stopId ===
+														stop.stopId
 														? "bg-red-100 font-bold"
 														: "hover:bg-red-50")
 												}
-												onClick={() => setSelectedDropStop(stop)}
-											>
+												onClick={() =>
+													setSelectedDropStop(stop)
+												}>
 												{stop.stopName}
 											</li>
 										))}
@@ -466,8 +490,7 @@ export default function Home() {
 											: "bg-gray-300 text-gray-500 cursor-not-allowed")
 									}
 									onClick={handleDropMapSelect}
-									disabled={!selectedDropStop}
-								>
+									disabled={!selectedDropStop}>
 									Select
 								</button>
 							</div>

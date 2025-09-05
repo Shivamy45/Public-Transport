@@ -62,10 +62,15 @@ const UserBusInfo = ({ busId }) => {
         mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
         if (!mapRef.current) {
+            // Validate stops[0] lat and lng
+            const firstStop = stops[0];
+            const isValidLatLng = firstStop && typeof firstStop.lat === 'number' && !isNaN(firstStop.lat) && typeof firstStop.lng === 'number' && !isNaN(firstStop.lng);
+            const center = isValidLatLng ? [firstStop.lng, firstStop.lat] : [77.5946, 12.9716];
+            
             mapRef.current = new mapboxgl.Map({
                 container: mapContainer.current,
                 style: "mapbox://styles/mapbox/streets-v12",
-                center: [stops[0].lng, stops[0].lat],
+                center,
                 zoom: 10,
             });
         }
