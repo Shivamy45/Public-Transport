@@ -1,7 +1,13 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { MdMyLocation } from "react-icons/md";
+import mapboxgl from "mapbox-gl";
+import { collection, getDocs } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+
+mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
 export default function Home() {
 	const router = useRouter();
@@ -10,6 +16,37 @@ export default function Home() {
 
 	const [pickupLocation, setPickupLocation] = useState('');
 	const [dropLocation, setDropLocation] = useState('');
+
+	const [stops, setStops] = useState([]);
+	const [selectedPickupStop, setSelectedPickupStop] = useState(null);
+	const [selectedDropStop, setSelectedDropStop] = useState(null);
+	// Fetch stops from Firestore on mount
+	useEffect(() => {
+		async function fetchStops() {
+			try {
+				const querySnapshot = await getDocs(collection(db, "stops"));
+				const stopsData = querySnapshot.docs.map(doc => ({
+					stopId: doc.id,
+					...doc.data(),
+				}));
+				setStops(stopsData);
+			} catch (err) {
+				console.error("Failed to fetch stops", err);
+			}
+		}
+		fetchStops();
+	}, []);
+
+	const [pickupSuggestions, setPickupSuggestions] = useState([]);
+	const [dropSuggestions, setDropSuggestions] = useState([]);
+	const [showPickupMap, setShowPickupMap] = useState(false);
+	const [showDropMap, setShowDropMap] = useState(false);
+	const [userCoords, setUserCoords] = useState(null);
+
+	const pickupMapRef = useRef(null);
+	const dropMapRef = useRef(null);
+	const pickupMapInstance = useRef(null);
+	const dropMapInstance = useRef(null);
 
 	useEffect(() => {
 		const checkAuth = () => {
@@ -39,8 +76,192 @@ export default function Home() {
 		return () =>
 			window.removeEventListener("authStateChanged", handleAuthChange);
 	}, []);
-	const handleBookRide = () => {
-		router.push("/book-ride");
+
+	useEffect(() => {
+		// Get user geolocation
+		if (navigator.geolocation) {
+			navigator.geolocation.getCurrentPosition(
+				(position) => {
+					setUserCoords({
+						lat: position.coords.latitude,
+						lng: position.coords.longitude,
+					});
+				},
+				() => {
+					setUserCoords(null);
+				}
+			);
+		} else {
+			setUserCoords(null);
+		}
+	}, []);
+
+	// Show stops as markers on pickup map; handle marker selection
+	useEffect(() => {
+		if (showPickupMap && pickupMapRef.current && !pickupMapInstance.current) {
+			pickupMapInstance.current = new mapboxgl.Map({
+				container: pickupMapRef.current,
+				style: "mapbox://styles/mapbox/streets-v11",
+				center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
+				zoom: userCoords ? 12 : 3,
+			});
+		}
+		// Add stop markers when map and stops are ready
+		if (showPickupMap && pickupMapInstance.current) {
+			// Clear previous markers
+			if (pickupMapInstance.current._stopMarkers) {
+				pickupMapInstance.current._stopMarkers.forEach(m => m.remove());
+			}
+			const markers = [];
+			stops.forEach(stop => {
+				const markerEl = document.createElement("div");
+				const isSelected = selectedPickupStop && selectedPickupStop.stopId === stop.stopId;
+				markerEl.className =
+					"w-4 h-4 rounded-full border-2 border-white cursor-pointer " +
+					(isSelected
+						? "bg-blue-800 ring-2 ring-blue-500 scale-125"
+						: "bg-blue-600");
+				markerEl.title = stop.stopName;
+				const marker = new mapboxgl.Marker(markerEl)
+					.setLngLat([stop.lng, stop.lat])
+					.addTo(pickupMapInstance.current);
+				marker.getElement().addEventListener("click", () => {
+					setSelectedPickupStop(stop);
+				});
+				markers.push(marker);
+			});
+			pickupMapInstance.current._stopMarkers = markers;
+		}
+		// Cleanup pickup map on modal close
+		if (!showPickupMap && pickupMapInstance.current) {
+			// Remove markers
+			if (pickupMapInstance.current._stopMarkers) {
+				pickupMapInstance.current._stopMarkers.forEach(m => m.remove());
+				delete pickupMapInstance.current._stopMarkers;
+			}
+			pickupMapInstance.current.remove();
+			pickupMapInstance.current = null;
+			setSelectedPickupStop(null);
+		}
+		// Re-run when stops or selection changes
+	}, [showPickupMap, userCoords, stops, selectedPickupStop]);
+
+	// Show stops as markers on drop map; handle marker selection
+	useEffect(() => {
+		if (showDropMap && dropMapRef.current && !dropMapInstance.current) {
+			dropMapInstance.current = new mapboxgl.Map({
+				container: dropMapRef.current,
+				style: "mapbox://styles/mapbox/streets-v11",
+				center: userCoords ? [userCoords.lng, userCoords.lat] : [78.9629, 20.5937],
+				zoom: userCoords ? 12 : 3,
+			});
+		}
+		// Add stop markers when map and stops are ready
+		if (showDropMap && dropMapInstance.current) {
+			if (dropMapInstance.current._stopMarkers) {
+				dropMapInstance.current._stopMarkers.forEach(m => m.remove());
+			}
+			const markers = [];
+			stops.forEach(stop => {
+				const markerEl = document.createElement("div");
+				const isSelected = selectedDropStop && selectedDropStop.stopId === stop.stopId;
+				markerEl.className =
+					"w-4 h-4 rounded-full border-2 border-white cursor-pointer " +
+					(isSelected
+						? "bg-red-800 ring-2 ring-red-500 scale-125"
+						: "bg-red-600");
+				markerEl.title = stop.stopName;
+				const marker = new mapboxgl.Marker(markerEl)
+					.setLngLat([stop.lng, stop.lat])
+					.addTo(dropMapInstance.current);
+				marker.getElement().addEventListener("click", () => {
+					setSelectedDropStop(stop);
+				});
+				markers.push(marker);
+			});
+			dropMapInstance.current._stopMarkers = markers;
+		}
+		// Cleanup drop map on modal close
+		if (!showDropMap && dropMapInstance.current) {
+			if (dropMapInstance.current._stopMarkers) {
+				dropMapInstance.current._stopMarkers.forEach(m => m.remove());
+				delete dropMapInstance.current._stopMarkers;
+			}
+			dropMapInstance.current.remove();
+			dropMapInstance.current = null;
+			setSelectedDropStop(null);
+		}
+	}, [showDropMap, userCoords, stops, selectedDropStop]);
+
+	// Handler for selecting pickup stop from modal
+	const handlePickupMapSelect = () => {
+		if (selectedPickupStop) {
+			setPickupLocation(selectedPickupStop.stopName);
+			setPickupSuggestions([]);
+			setShowPickupMap(false);
+		}
+	};
+
+	// Handler for selecting drop stop from modal
+	const handleDropMapSelect = () => {
+		if (selectedDropStop) {
+			setDropLocation(selectedDropStop.stopName);
+			setDropSuggestions([]);
+			setShowDropMap(false);
+		}
+	};
+
+	const handlePickupChange = async (e) => {
+		setPickupLocation(e.target.value);
+		if (e.target.value.length > 2) {
+			try {
+				const res = await fetch(
+					`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+						e.target.value
+					)}.json?${userCoords ? `proximity=${userCoords.lng},${userCoords.lat}&` : ""}access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
+				);
+				const data = await res.json();
+				setPickupSuggestions(data.features || []);
+			} catch {
+				setPickupSuggestions([]);
+			}
+		} else {
+			setPickupSuggestions([]);
+		}
+	};
+	const handleDropChange = async (e) => {
+		setDropLocation(e.target.value);
+		if (e.target.value.length > 2) {
+			try {
+				const res = await fetch(
+					`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+						e.target.value
+					)}.json?${userCoords ? `proximity=${userCoords.lng},${userCoords.lat}&` : ""}access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
+				);
+				const data = await res.json();
+				setDropSuggestions(data.features || []);
+			} catch {
+				setDropSuggestions([]);
+			}
+		} else {
+			setDropSuggestions([]);
+		}
+	};
+	const selectPickup = (s) => {
+		setPickupLocation(s.place_name);
+		setPickupSuggestions([]);
+	};
+	const selectDrop = (s) => {
+		setDropLocation(s.place_name);
+		setDropSuggestions([]);
+	};
+
+	const handleShowBuses = () => {
+		const query = new URLSearchParams({
+			pickup: pickupLocation,
+			drop: dropLocation,
+		}).toString();
+		router.push(`/buses?${query}`);
 	};
 
 	return (
@@ -57,7 +278,7 @@ export default function Home() {
 				<div className="relative max-w-4xl mx-auto px-6 py-20 text-center">
 					{/* Main Heading */}
 					<h1 className="text-4xl md:text-6xl font-bold text-gray-800 mb-12 leading-tight">
-						India Moves On{' '}
+						India Moves On{" "}
 						<span className="bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
 							TransitGo!
 						</span>
@@ -65,7 +286,7 @@ export default function Home() {
 
 					{/* Booking Form */}
 					<div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-auto border border-gray-100">
-						<div className="space-y-4">
+						<div className="space-y-4 relative">
 							{/* Pickup Location */}
 							<div className="relative">
 								<div className="absolute left-4 top-1/2 transform -translate-y-1/2">
@@ -75,9 +296,28 @@ export default function Home() {
 									type="text"
 									placeholder="Enter Pickup Location"
 									value={pickupLocation}
-									onChange={(e) => setPickupLocation(e.target.value)}
-									className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
+									onChange={handlePickupChange}
+									className="w-full pl-12 pr-12 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
 								/>
+								<button
+									type="button"
+									onClick={() => setShowPickupMap(true)}
+									className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xl cursor-pointer select-none"
+									aria-label="Pick pickup location on map">
+									<MdMyLocation color="black" />
+								</button>
+								{pickupSuggestions.length > 0 && (
+									<ul className="absolute z-10 bg-white border border-gray-300 rounded-md w-full max-h-48 overflow-y-auto mt-1 text-left">
+										{pickupSuggestions.map((s) => (
+											<li
+												key={s.id}
+												className="px-4 py-2 hover:bg-blue-100 cursor-pointer"
+												onClick={() => selectPickup(s)}>
+												{s.place_name}
+											</li>
+										))}
+									</ul>
+								)}
 							</div>
 
 							{/* Drop Location */}
@@ -89,21 +329,147 @@ export default function Home() {
 									type="text"
 									placeholder="Enter Drop Location"
 									value={dropLocation}
-									onChange={(e) => setDropLocation(e.target.value)}
-									className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
+									onChange={handleDropChange}
+									className="w-full pl-12 pr-12 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 text-gray-700 placeholder-gray-500 transition-all"
 								/>
+								<button
+									type="button"
+									onClick={() => setShowDropMap(true)}
+									className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xl cursor-pointer select-none"
+									aria-label="Pick drop location on map">
+									<MdMyLocation color="black" />
+								</button>
+								{dropSuggestions.length > 0 && (
+									<ul className="absolute z-10 bg-white border border-gray-300 rounded-md w-full max-h-48 overflow-y-auto mt-1 text-left">
+										{dropSuggestions.map((s) => (
+											<li
+												key={s.id}
+												className="px-4 py-2 hover:bg-blue-100 cursor-pointer"
+												onClick={() => selectDrop(s)}>
+												{s.place_name}
+											</li>
+										))}
+									</ul>
+								)}
 							</div>
 
 							{/* Book Ride Button */}
-							<button className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-xl" onClick={handleBookRide}>
-								Book Ride
+							<button
+								className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white font-bold py-4 px-8 rounded-xl text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-xl"
+								onClick={handleShowBuses}>
+								Show Buses
 							</button>
 						</div>
 					</div>
-
 				</div>
 
+				{/* Pickup Map Modal */}
+				{showPickupMap && (
+					<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+						<div className="bg-white rounded-lg overflow-hidden w-11/12 h-3/4 relative flex flex-col">
+							<button
+								className="absolute top-2 right-2 z-10 bg-red-500 text-white px-3 py-1 rounded"
+								onClick={() => setShowPickupMap(false)}>
+								Close
+							</button>
+							<div className="relative flex-1">
+								<div
+									id="pickupMap"
+									ref={pickupMapRef}
+									className="w-full h-full"
+								></div>
+								{/* List stops for reference */}
+								<div className="absolute left-2 top-2 bg-white bg-opacity-90 rounded shadow p-2 z-30 max-h-40 overflow-y-auto">
+									<div className="font-semibold mb-1 text-sm">Select a Pickup Stop:</div>
+									<ul>
+										{stops.map(stop => (
+											<li
+												key={stop.stopId}
+												className={
+													"text-xs px-2 py-1 rounded cursor-pointer " +
+													(selectedPickupStop && selectedPickupStop.stopId === stop.stopId
+														? "bg-blue-100 font-bold"
+														: "hover:bg-blue-50")
+												}
+												onClick={() => setSelectedPickupStop(stop)}
+											>
+												{stop.stopName}
+											</li>
+										))}
+									</ul>
+								</div>
+							</div>
+							<div className="absolute left-0 right-0 bottom-4 flex justify-center z-30">
+								<button
+									className={
+										"font-bold py-2 px-6 rounded-full shadow-lg text-lg " +
+										(selectedPickupStop
+											? "bg-blue-600 hover:bg-blue-700 text-white"
+											: "bg-gray-300 text-gray-500 cursor-not-allowed")
+									}
+									onClick={handlePickupMapSelect}
+									disabled={!selectedPickupStop}
+								>
+									Select
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
 
+				{/* Drop Map Modal */}
+				{showDropMap && (
+					<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+						<div className="bg-white rounded-lg overflow-hidden w-11/12 h-3/4 relative flex flex-col">
+							<button
+								className="absolute top-2 right-2 z-10 bg-red-500 text-white px-3 py-1 rounded"
+								onClick={() => setShowDropMap(false)}>
+								Close
+							</button>
+							<div className="relative flex-1">
+								<div
+									id="dropMap"
+									ref={dropMapRef}
+									className="w-full h-full"
+								></div>
+								{/* List stops for reference */}
+								<div className="absolute left-2 top-2 bg-white bg-opacity-90 rounded shadow p-2 z-30 max-h-40 overflow-y-auto">
+									<div className="font-semibold mb-1 text-sm">Select a Drop Stop:</div>
+									<ul>
+										{stops.map(stop => (
+											<li
+												key={stop.stopId}
+												className={
+													"text-xs px-2 py-1 rounded cursor-pointer " +
+													(selectedDropStop && selectedDropStop.stopId === stop.stopId
+														? "bg-red-100 font-bold"
+														: "hover:bg-red-50")
+												}
+												onClick={() => setSelectedDropStop(stop)}
+											>
+												{stop.stopName}
+											</li>
+										))}
+									</ul>
+								</div>
+							</div>
+							<div className="absolute left-0 right-0 bottom-4 flex justify-center z-30">
+								<button
+									className={
+										"font-bold py-2 px-6 rounded-full shadow-lg text-lg " +
+										(selectedDropStop
+											? "bg-blue-600 hover:bg-blue-700 text-white"
+											: "bg-gray-300 text-gray-500 cursor-not-allowed")
+									}
+									onClick={handleDropMapSelect}
+									disabled={!selectedDropStop}
+								>
+									Select
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
 			</main>
 			{/* Hero Section */}
 			<div className="relative overflow-hidden bg-white">
@@ -180,43 +546,6 @@ export default function Home() {
 								Real-time Tracking
 							</p>
 						</div>
-					</div>
-				</div>
-			</div>
-
-			{/* Quick Actions */}
-			<div className="py-12 bg-gray-50">
-				<div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-					<div className="text-center">
-						<h2 className="text-3xl font-extrabold text-gray-900">
-							Quick Actions
-						</h2>
-						<p className="mt-4 text-lg text-gray-600">
-							Everything you need to manage your public transport
-						</p>
-					</div>
-
-					<div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-						{quickActions.map((action, index) => (
-							<Link
-								key={index}
-								href={action.href}
-								className="group relative bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 border border-gray-200 hover:border-gray-300">
-								<div
-									className={`inline-flex p-3 rounded-lg bg-gradient-to-r ${action.color} text-white text-2xl mb-4`}>
-									{action.icon}
-								</div>
-								<h3 className="text-lg font-medium text-gray-900 group-hover:text-blue-600 transition-colors">
-									{action.title}
-								</h3>
-								<p className="mt-2 text-sm text-gray-500">
-									{action.description}
-								</p>
-								<div className="mt-4 text-blue-600 text-sm font-medium group-hover:text-blue-700">
-									Learn more →
-								</div>
-							</Link>
-						))}
 					</div>
 				</div>
 			</div>

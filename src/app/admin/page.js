@@ -321,23 +321,7 @@ const AdminPage = () => {
 						))
 					)}
 				</div>
-
-				{/* TODO: Fleet Overview Map - Re-implement when bus location tracking is ready
-				{busIds.length > 0 && (
-					<div className="mt-12">
-						<div className="mb-6">
-							<h2 className="text-2xl font-bold text-gray-900">
-								Fleet Overview
-							</h2>
-							<p className="text-gray-600">
-								All bus routes on the map
-							</p>
-						</div>
-						<MapView />
-					</div>
-				)}
-				*/}
-
+				
 				{/* Add Bus Modal */}
 				{showAddModal && (
 					<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm p-4 overflow-y-auto">

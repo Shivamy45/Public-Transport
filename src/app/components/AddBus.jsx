@@ -14,6 +14,7 @@ import {
 	arrayUnion,
 } from "firebase/firestore";
 import mapboxgl from "mapbox-gl";
+import "mapbox-gl/dist/mapbox-gl.css";
 
 const AddBus = ({ onSuccess }) => {
 	// Form state
@@ -51,6 +52,15 @@ const AddBus = ({ onSuccess }) => {
 	const markersRef = useRef([]);
 	const routeLineRef = useRef(null);
 
+	// Stops for Map from firestore
+	const [allStops, setAllStops] = useState([]);
+	const [selectedTempStop, setSelectedTempStop] = useState(null);
+	const [tempMarker, setTempMarker] = useState(null);
+
+	const isAddingFromMapRef = useRef(false);
+	useEffect(() => {
+		isAddingFromMapRef.current = isAddingFromMap;
+	}, [isAddingFromMap]);
 	// Load current user
 	useEffect(() => {
 		try {
@@ -64,6 +74,23 @@ const AddBus = ({ onSuccess }) => {
 		} catch (err) {
 			console.error("Error loading user:", err);
 		}
+	}, []);
+
+	//Fetch all stops from firestore
+	useEffect(() => {
+		async function fetchStops() {
+			try {
+				const querySnapshot = await getDocs(collection(db, "stops"));
+				const stopsData = querySnapshot.docs.map((doc) => ({
+					stopId: doc.id,
+					...doc.data(),
+				}));
+				setAllStops(stopsData);
+			} catch (err) {
+				console.error("Failed to fetch stops", err);
+			}
+		}
+		fetchStops();
 	}, []);
 
 	// Fetch location suggestions from Mapbox
@@ -122,28 +149,69 @@ const AddBus = ({ onSuccess }) => {
 		}
 
 		// Initialize map
-		const center =
-			stops.length > 0 && stops[0].lat && stops[0].lng
-				? [stops[0].lng, stops[0].lat]
-				: [77.209, 28.6139]; // Default to Delhi
+		let center;
+		if (
+			stops.length > 0 &&
+			stops[stops.length - 1].lat &&
+			stops[stops.length - 1].lng
+		) {
+			// center on last added stop
+			center = [stops[stops.length - 1].lng, stops[stops.length - 1].lat];
+		} else if (navigator.geolocation) {
+			// fallback to driver's current location
+			navigator.geolocation.getCurrentPosition(
+				(pos) => {
+					mapRef.current.setCenter([
+						pos.coords.longitude,
+						pos.coords.latitude,
+					]);
+				},
+				() => {
+					mapRef.current.setCenter([77.209, 28.6139]); // fallback to Delhi
+				}
+			);
+			// set a temporary center while waiting
+			center = [77.209, 28.6139];
+		} else {
+			center = [77.209, 28.6139];
+		}
 
 		mapRef.current = new mapboxgl.Map({
 			container: mapContainer.current,
 			style: "mapbox://styles/mapbox/streets-v11",
 			center,
 			zoom: 12,
-			interactive: true
+			interactive: true,
 		});
 		// Set crosshair cursor for map for adding stops
 		mapRef.current.getCanvas().style.cursor = "crosshair";
 
+		// Marks all the stops from firestore on the map
+		if (allStops.length > 0 && mapRef.current) {
+			allStops.forEach((stop) => {
+				const markerEl = document.createElement("div");
+				markerEl.className =
+					"w-3 h-3 bg-blue-600 rounded-full border-2 border-white cursor-pointer";
+				const marker = new mapboxgl.Marker(markerEl)
+					.setLngLat([stop.lng, stop.lat])
+					.addTo(mapRef.current);
+
+				marker.getElement().addEventListener("click", () => {
+					setStopPlace(stop.stopName);
+					setMapClickLocation({ lat: stop.lat, lng: stop.lng });
+					setShowMapModal(false);
+					setIsAddingFromMap(false);
+				});
+			});
+		}
+
 		// Add click handler for adding stops from map immediately after map creation
 		mapRef.current.on("click", handleMapClick);
+		console.log("Map initialized and click listener attached");
 
 		mapRef.current.on("load", () => {
 			updateMapWithStops();
 		});
-
 		return () => {
 			if (mapRef.current) {
 				mapRef.current.off("click", handleMapClick);
@@ -218,7 +286,10 @@ const AddBus = ({ onSuccess }) => {
 			try {
 				routeFeature = await fetchDirectionsRoute(validStops);
 			} catch (e) {
-				console.error("Directions API failed, falling back to straight line:", e);
+				console.error(
+					"Directions API failed, falling back to straight line:",
+					e
+				);
 			}
 
 			// Fallback to straight line if routing unavailable
@@ -228,7 +299,10 @@ const AddBus = ({ onSuccess }) => {
 					properties: {},
 					geometry: {
 						type: "LineString",
-						coordinates: validStops.map((stop) => [stop.lng, stop.lat]),
+						coordinates: validStops.map((stop) => [
+							stop.lng,
+							stop.lat,
+						]),
 					},
 				};
 			}
@@ -293,34 +367,41 @@ const AddBus = ({ onSuccess }) => {
 	};
 
 	const handleMapClick = async (e) => {
-		if (!isAddingFromMap) return; 
-		console.log("is clicked on ", e.lngLat)
 		const { lng, lat } = e.lngLat;
-		setMapClickLocation({ lat, lng });
 
-		try {
-			const response = await fetch(
-				`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
-			);
-			const data = await response.json();
+		if (tempMarker) tempMarker.remove();
 
-			if (data.features && data.features.length > 0) {
-				setStopPlace(data.features[0].place_name);
-			} else {
-				setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+		const marker = new mapboxgl.Marker({ color: "red", draggable: true })
+			.setLngLat([lng, lat])
+			.addTo(mapRef.current);
+
+		setTempMarker(marker);
+
+		const updateStopInfo = async (lng, lat) => {
+			try {
+				const response = await fetch(
+					`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${process.env.NEXT_PUBLIC_MAPBOX_TOKEN}`
+				);
+				const data = await response.json();
+				const placeName =
+					data.features?.[0]?.place_name ||
+					`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+				setSelectedTempStop({ lat, lng, stopName: placeName });
+			} catch {
+				setSelectedTempStop({
+					lat,
+					lng,
+					stopName: `Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+				});
 			}
-		} catch (err) {
-			console.error("Reverse geocoding failed:", err);
-			setStopPlace(`Location ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
-		}
+		};
 
-		// Reset time so user must add it manually
-		setStopTime("");
+		await updateStopInfo(lng, lat);
 
-		// Close the map modal immediately
-		setShowMapModal(false);
-
-		// Do NOT reset isAddingFromMap here, keep it true until stop is confirmed
+		marker.on("dragend", () => {
+			const pos = marker.getLngLat();
+			updateStopInfo(pos.lng, pos.lat);
+		});
 	};
 
 	// Helper function to convert time string to minutes since midnight
@@ -332,9 +413,12 @@ const AddBus = ({ onSuccess }) => {
 
 	// Helper function to convert minutes since midnight to time string
 	const minutesToTime = (minutes) => {
-		const hours = Math.floor(minutes / 60);
-		const mins = minutes % 60;
-		return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
+		const m = ((minutes % 1440) + 1440) % 1440; // wrap around midnight
+		const hours = Math.floor(m / 60);
+		const mins = m % 60;
+		return `${hours.toString().padStart(2, "0")}:${mins
+			.toString()
+			.padStart(2, "0")}`;
 	};
 
 	// Calculate journey start and end times from stops
@@ -408,7 +492,7 @@ const AddBus = ({ onSuccess }) => {
 		}
 
 		if (!stopTime) {
-			const errorMessage = isAddingFromMap 
+			const errorMessage = isAddingFromMap
 				? "Please enter a stop time to confirm the location from the map."
 				: "Please select a stop time.";
 			setError(errorMessage);
@@ -419,8 +503,9 @@ const AddBus = ({ onSuccess }) => {
 		let duplicateType = null;
 		const isDuplicate = stops.some((stop) => {
 			// If we have coordinates from map click or selected suggestion
-			const hasCoordinates = mapClickLocation || (selectedStop && selectedStop.center);
-			
+			const hasCoordinates =
+				mapClickLocation || (selectedStop && selectedStop.center);
+
 			if (hasCoordinates) {
 				// Check if this stop has GPS coordinates
 				if (stop.lat && stop.lng) {
@@ -433,13 +518,13 @@ const AddBus = ({ onSuccess }) => {
 						newLat = selectedStop.center[1];
 						newLng = selectedStop.center[0];
 					}
-					
+
 					// Compare GPS coordinates (within ~10 meters tolerance)
 					if (newLat && newLng) {
 						const latDiff = Math.abs(stop.lat - newLat);
 						const lngDiff = Math.abs(stop.lng - newLng);
 						const tolerance = 0.0001; // ~10 meters
-						
+
 						if (latDiff < tolerance && lngDiff < tolerance) {
 							duplicateType = "location";
 							return true; // Same location
@@ -447,7 +532,7 @@ const AddBus = ({ onSuccess }) => {
 					}
 				}
 			}
-			
+
 			// Fallback to name comparison
 			if (stop.stopName.toLowerCase() === stopPlace.toLowerCase()) {
 				duplicateType = "name";
@@ -457,9 +542,10 @@ const AddBus = ({ onSuccess }) => {
 		});
 
 		if (isDuplicate) {
-			const errorMessage = duplicateType === "location" 
-				? "A stop at this location has already been added to the route."
-				: "A stop with this name has already been added to the route.";
+			const errorMessage =
+				duplicateType === "location"
+					? "A stop at this location has already been added to the route."
+					: "A stop with this name has already been added to the route.";
 			setError(errorMessage);
 			return;
 		}
@@ -489,15 +575,16 @@ const AddBus = ({ onSuccess }) => {
 
 			setStops((prevStops) => [...prevStops, newStop]);
 
+			if (showMapModal) setShowMapModal(false);
+			setIsAddingFromMap(false);
+
 			// Reset form and map state
 			setStopPlace("");
 			setStopTime("");
 			setStopSuggestions([]);
 			setSelectedStop(null);
 			setMapClickLocation(null);
-
-			// Exit "Add from Map" mode after successful addition
-			setIsAddingFromMap(false);
+			// (Removed redundant setIsAddingFromMap(false) here)
 		} catch (err) {
 			console.error("Error adding stop:", err);
 			setError("Failed to add stop. Please try again.");
@@ -588,7 +675,10 @@ const AddBus = ({ onSuccess }) => {
 
 			// Check for duplicate bus number in Firestore
 			const busesRef = collection(db, "buses");
-			const dupQuery = query(busesRef, where("busNo", "==", normalizedBusNo));
+			const dupQuery = query(
+				busesRef,
+				where("busNo", "==", normalizedBusNo)
+			);
 			const dupSnap = await getDocs(dupQuery);
 			if (!dupSnap.empty) {
 				setError("A bus with this number already exists.");
@@ -819,8 +909,8 @@ const AddBus = ({ onSuccess }) => {
 										setSelectedStop(null);
 									}}
 									className={`w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 text-gray-900 ${
-										mapClickLocation 
-											? "border-green-300 focus:ring-green-500 bg-green-50" 
+										mapClickLocation
+											? "border-green-300 focus:ring-green-500 bg-green-50"
 											: "border-gray-300 focus:ring-blue-500"
 									}`}
 									placeholder="e.g., Main Street, Central Station"
@@ -848,11 +938,11 @@ const AddBus = ({ onSuccess }) => {
 											}}>
 											<div className="font-medium text-sm">
 												{suggestion.text}
-												</div>
+											</div>
 											<div className="text-xs text-gray-600">
 												{suggestion.place_name}
-												</div>
 											</div>
+										</div>
 									))}
 								</div>
 							)}
@@ -872,8 +962,10 @@ const AddBus = ({ onSuccess }) => {
 								value={stopTime}
 								onChange={(e) => setStopTime(e.target.value)}
 								className={`w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 text-gray-900 ${
-									isAddingFromMap && mapClickLocation && !stopTime
-										? "border-yellow-300 focus:ring-yellow-500 bg-yellow-50" 
+									isAddingFromMap &&
+									mapClickLocation &&
+									!stopTime
+										? "border-yellow-300 focus:ring-yellow-500 bg-yellow-50"
 										: "border-gray-300 focus:ring-blue-500"
 								}`}
 								required={isAddingFromMap && mapClickLocation}
@@ -906,7 +998,8 @@ const AddBus = ({ onSuccess }) => {
 								</strong>
 								{returnJourneyEnabled && returnStartTime && (
 									<span className="block mt-1 text-green-600">
-										Return journey starts at {returnStartTime}
+										Return journey starts at{" "}
+										{returnStartTime}
 									</span>
 								)}
 							</p>
@@ -968,10 +1061,10 @@ const AddBus = ({ onSuccess }) => {
 																		stop.stopId,
 																		"up"
 																	)
-															}
+																}
 																disabled={
 																	index === 0
-																	}
+																}
 																className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
 																title="Move Up">
 																↑
@@ -983,12 +1076,12 @@ const AddBus = ({ onSuccess }) => {
 																		stop.stopId,
 																		"down"
 																	)
-															}
+																}
 																disabled={
 																	index ===
-																		stops.length -
-																			1
-																	}
+																	stops.length -
+																		1
+																}
 																className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
 																title="Move Down">
 																↓
@@ -999,8 +1092,8 @@ const AddBus = ({ onSuccess }) => {
 																	handleRemoveStop(
 																		stop.stopId
 																	)
-															}
-															className="text-red-600 hover:text-red-900"
+																}
+																className="text-red-600 hover:text-red-900"
 																title="Remove Stop">
 																✕
 															</button>
@@ -1053,7 +1146,6 @@ const AddBus = ({ onSuccess }) => {
 						)}
 					</button>
 				</div>
-
 			</form>
 
 			{/* Map Modal */}
@@ -1080,7 +1172,7 @@ const AddBus = ({ onSuccess }) => {
 										isAddingFromMap
 											? "bg-red-600 hover:bg-red-700 text-white"
 											: "bg-green-600 hover:bg-green-700 text-white"
-									}`}> 
+									}`}>
 									{isAddingFromMap
 										? "Cancel Adding"
 										: "Add from Map"}
@@ -1107,6 +1199,60 @@ const AddBus = ({ onSuccess }) => {
 
 						{/* Map Container */}
 						<div className="relative flex-1 h-full">
+							{selectedTempStop && (
+								<div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-white shadow-md rounded p-3 z-20">
+									<p className="text-sm font-medium">
+										{selectedTempStop.stopName}
+									</p>
+									<div className="flex space-x-2 mt-2">
+										<button
+											className="px-3 py-1 bg-blue-600 text-white text-sm rounded"
+											onClick={async () => {
+												setStopPlace(
+													selectedTempStop.stopName
+												);
+												setMapClickLocation({
+													lat: selectedTempStop.lat,
+													lng: selectedTempStop.lng,
+												});
+												try {
+													await addDoc(
+														collection(db, "stops"),
+														{
+															stopName:
+																selectedTempStop.stopName,
+															lat: selectedTempStop.lat,
+															lng: selectedTempStop.lng,
+														}
+													);
+												} catch (err) {
+													console.error(
+														"Error saving stop:",
+														err
+													);
+												}
+												setSelectedTempStop(null);
+												if (tempMarker) {
+													tempMarker.remove();
+													setTempMarker(null);
+												}
+											}}>
+											Select
+										</button>
+										<button
+											className="px-3 py-1 bg-gray-300 text-gray-700 text-sm rounded"
+											onClick={() => {
+												if (tempMarker) {
+													tempMarker.remove();
+													setTempMarker(null);
+												}
+												setSelectedTempStop(null);
+											}}>
+											Cancel
+										</button>
+									</div>
+								</div>
+							)}
 							<div
 								ref={mapContainer}
 								className="w-full h-full"

@@ -1,47 +1,26 @@
 import React, { useState, useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import { doc, getDoc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-// Haversine formula to calculate distance between two lat/lng points in meters
-function haversineDistance(lat1, lon1, lat2, lon2) {
-	function toRad(x) {
-		return (x * Math.PI) / 180;
-	}
-	const R = 6371000; // meters
-	const dLat = toRad(lat2 - lat1);
-	const dLon = toRad(lon2 - lon1);
-	const a =
-		Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-		Math.cos(toRad(lat1)) *
-			Math.cos(toRad(lat2)) *
-			Math.sin(dLon / 2) *
-			Math.sin(dLon / 2);
-	const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-	return R * c;
-}
 
 const BusInfo = ({ busId }) => {
-	// State for bus doc and stops
 	const [bus, setBus] = useState(null);
 	const [stops, setStops] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-
-	// Journey state
-	const [currentStopIndex, setCurrentStopIndex] = useState(0);
-	const [status, setStatus] = useState("Not Started");
-	const [isReturn, setIsReturn] = useState(false);
-
-	// Geolocation state
+	const [expanded, setExpanded] = useState(false);
 	const [driverLocation, setDriverLocation] = useState(null);
 	const [lastUpdated, setLastUpdated] = useState(null);
+	const [etaNextStop, setEtaNextStop] = useState(null);
+	const [etaFinalStop, setEtaFinalStop] = useState(null);
+	const [delayed, setDelayed] = useState(false);
 
-	// Mapbox
 	const mapContainer = useRef(null);
 	const mapRef = useRef(null);
 	const markersRef = useRef([]);
-	const driverMarkerRef = useRef(null);
+	const busMarkerRef = useRef(null);
+	const routeSourceId = "route";
 
 	// Fetch bus and stops with real-time updates
 	useEffect(() => {
@@ -50,15 +29,12 @@ const BusInfo = ({ busId }) => {
 		setLoading(true);
 		setError("");
 
-		// Real-time listener for bus document
 		const unsubscribe = onSnapshot(
 			doc(db, "buses", busId),
 			(docSnap) => {
 				if (docSnap.exists()) {
 					const busData = docSnap.data();
 					setBus(busData);
-
-					// Use stops from bus document directly
 					if (busData.stops && Array.isArray(busData.stops)) {
 						const processedStops = busData.stops.map(
 							(stop, index) => ({
@@ -90,159 +66,6 @@ const BusInfo = ({ busId }) => {
 
 		return () => unsubscribe();
 	}, [busId]);
-
-	// Initialize map
-	useEffect(() => {
-		if (!stops.length || !mapContainer.current || loading) return;
-
-		// Clean up existing map
-		if (mapRef.current) {
-			mapRef.current.remove();
-		}
-
-		// Clean up existing markers
-		markersRef.current.forEach((marker) => marker.remove());
-		markersRef.current = [];
-		if (driverMarkerRef.current) {
-			driverMarkerRef.current.remove();
-			driverMarkerRef.current = null;
-		}
-
-		// Set mapbox token
-		mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
-
-		if (!mapboxgl.accessToken) {
-			setError("Mapbox token not configured");
-			return;
-		}
-
-		// Calculate map center and bounds
-		const validStops = stops.filter((stop) => stop.lat && stop.lng);
-		if (validStops.length === 0) {
-			setError("No valid stop coordinates found");
-			return;
-		}
-
-		const center =
-			validStops.length > 0
-				? [validStops[0].lng, validStops[0].lat]
-				: [77.209, 28.6139]; // Default to Delhi
-
-		// Initialize map
-		mapRef.current = new mapboxgl.Map({
-			container: mapContainer.current,
-			style: "mapbox://styles/mapbox/streets-v11",
-			center,
-			zoom: 12,
-		});
-
-		mapRef.current.on("load", () => {
-			// Add route line if we have multiple stops
-			if (validStops.length > 1) {
-				mapRef.current.addSource("route", {
-					type: "geojson",
-					data: {
-						type: "Feature",
-						properties: {},
-						geometry: {
-							type: "LineString",
-							coordinates: validStops.map((stop) => [
-								stop.lng,
-								stop.lat,
-							]),
-						},
-					},
-				});
-
-				mapRef.current.addLayer({
-					id: "route",
-					type: "line",
-					source: "route",
-					layout: { "line-join": "round", "line-cap": "round" },
-					paint: { "line-color": "#0074D9", "line-width": 4 },
-				});
-			}
-
-			// Add stop markers
-			validStops.forEach((stop, idx) => {
-				const isCurrentStop = idx === currentStopIndex;
-				const isPastStop = idx < currentStopIndex;
-
-				let markerColor = "#2ECC40"; // Green for upcoming stops
-				if (isCurrentStop) markerColor = "#FF4136"; // Red for current
-				if (isPastStop) markerColor = "#AAAAAA"; // Gray for completed
-
-				const marker = new mapboxgl.Marker({ color: markerColor })
-					.setLngLat([stop.lng, stop.lat])
-					.setPopup(
-						new mapboxgl.Popup().setHTML(`
-                            <div>
-                                <strong>${stop.name}</strong><br/>
-                                Stop ${stop.stopNo}<br/>
-                                Time: ${stop.time}
-                            </div>
-                        `)
-					)
-					.addTo(mapRef.current);
-
-				markersRef.current.push(marker);
-			});
-
-			// Fit map to show all stops
-			if (validStops.length > 1) {
-				const bounds = new mapboxgl.LngLatBounds();
-				validStops.forEach((stop) =>
-					bounds.extend([stop.lng, stop.lat])
-				);
-				mapRef.current.fitBounds(bounds, { padding: 50 });
-			}
-		});
-
-		return () => {
-			if (mapRef.current) {
-				mapRef.current.remove();
-				mapRef.current = null;
-			}
-		};
-	}, [stops, loading, currentStopIndex]);
-
-	// Update driver location on map
-	useEffect(() => {
-		if (!driverLocation || !mapRef.current) return;
-
-		// Remove existing driver marker
-		if (driverMarkerRef.current) {
-			driverMarkerRef.current.remove();
-		}
-
-		// Add new driver marker
-		const driverMarker = new mapboxgl.Marker({
-			color: "#FFD700", // Gold color for driver
-			scale: 1.2,
-		})
-			.setLngLat([driverLocation.lng, driverLocation.lat])
-			.setPopup(
-				new mapboxgl.Popup().setHTML(`
-                    <div>
-                        <strong>Driver Location</strong><br/>
-                        Updated: ${
-							lastUpdated
-								? lastUpdated.toLocaleTimeString()
-								: "Unknown"
-						}
-                    </div>
-                `)
-			)
-			.addTo(mapRef.current);
-
-		driverMarkerRef.current = driverMarker;
-
-		// Center map on driver location
-		mapRef.current.easeTo({
-			center: [driverLocation.lng, driverLocation.lat],
-			zoom: 15,
-		});
-	}, [driverLocation, lastUpdated]);
 
 	// Watch driver geolocation
 	useEffect(() => {
@@ -276,75 +99,217 @@ const BusInfo = ({ busId }) => {
 		};
 	}, []);
 
-	// Auto-mark stop as reached if within threshold (100 meters)
+	// Initialize map and update route & markers on changes
+	useEffect(() => {
+		if (!mapContainer.current || !bus || !stops.length) return;
+		mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+		if (!mapboxgl.accessToken) {
+			setError("Mapbox token not configured");
+			return;
+		}
+
+		// Initialize map if not exists
+		if (!mapRef.current) {
+			mapRef.current = new mapboxgl.Map({
+				container: mapContainer.current,
+				style: "mapbox://styles/mapbox/streets-v11",
+				center: [stops[0].lng, stops[0].lat],
+				zoom: 12,
+			});
+		}
+
+		// Clear existing markers
+		markersRef.current.forEach((m) => m.remove());
+		markersRef.current = [];
+		if (busMarkerRef.current) {
+			busMarkerRef.current.remove();
+			busMarkerRef.current = null;
+		}
+
+		// Add stop markers with color coding
+		stops.forEach((stop, idx) => {
+			const markerColor = "#2ECC40"; // Green for all stops
+			const marker = new mapboxgl.Marker({ color: markerColor })
+				.setLngLat([stop.lng, stop.lat])
+				.setPopup(
+					new mapboxgl.Popup({ offset: 25 }).setHTML(`
+						<div class="text-sm font-semibold">${stop.name}</div>
+						<div class="text-xs">Scheduled: ${stop.time || "N/A"}</div>
+					`)
+				)
+				.addTo(mapRef.current);
+			markersRef.current.push(marker);
+		});
+
+		// Add bus marker if driver location available
+		if (driverLocation) {
+			busMarkerRef.current = new mapboxgl.Marker({
+				color: "#FFD700",
+				scale: 1.2,
+			})
+				.setLngLat([driverLocation.lng, driverLocation.lat])
+				.setPopup(
+					new mapboxgl.Popup({ offset: 25 }).setHTML(`
+						<div class="text-sm font-semibold">Bus Location</div>
+						<div class="text-xs">Updated: ${
+							lastUpdated
+								? lastUpdated.toLocaleTimeString()
+								: "Unknown"
+						}</div>
+					`)
+				)
+				.addTo(mapRef.current);
+		}
+
+		// Fit map bounds to stops and driver location
+		const bounds = new mapboxgl.LngLatBounds();
+		stops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
+		if (driverLocation) bounds.extend([driverLocation.lng, driverLocation.lat]);
+		mapRef.current.fitBounds(bounds, { padding: 50 });
+
+	}, [bus, stops, driverLocation, lastUpdated]);
+
+	// Fetch and draw route using Mapbox Directions API
 	useEffect(() => {
 		if (
+			!mapRef.current ||
 			!driverLocation ||
 			!stops.length ||
-			currentStopIndex >= stops.length ||
-			status === "Completed" ||
-			status === "Return Completed"
+			!process.env.NEXT_PUBLIC_MAPBOX_TOKEN
 		)
 			return;
 
-		const currentStop = stops[currentStopIndex];
-		if (!currentStop?.lat || !currentStop?.lng) return;
+		const accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+		const coords = [
+			[driverLocation.lng, driverLocation.lat],
+			...stops.map((s) => [s.lng, s.lat]),
+		];
+		const coordStr = coords.map((c) => c.join(",")).join(";");
 
-		const dist = haversineDistance(
-			driverLocation.lat,
-			driverLocation.lng,
-			currentStop.lat,
-			currentStop.lng
-		);
+		const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?geometries=geojson&access_token=${accessToken}&overview=full&steps=false`;
 
-		if (dist < 100 && status === "Ongoing") {
-			setStatus("Reached");
-		}
-	}, [driverLocation, stops, currentStopIndex, status]);
+		fetch(url)
+			.then((res) => res.json())
+			.then((data) => {
+				if (
+					data.routes &&
+					data.routes.length > 0 &&
+					data.routes[0].geometry
+				) {
+					const route = data.routes[0].geometry;
 
-	// Handler functions
-	const handleStartJourney = () => {
-		setStatus("Ongoing");
-		setCurrentStopIndex(0);
-		setIsReturn(false);
+					// Add or update route source and layer
+					if (mapRef.current.getSource(routeSourceId)) {
+						mapRef.current.getSource(routeSourceId).setData({
+							type: "Feature",
+							properties: {},
+							geometry: route,
+						});
+					} else {
+						mapRef.current.addSource(routeSourceId, {
+							type: "geojson",
+							data: {
+								type: "Feature",
+								properties: {},
+								geometry: route,
+							},
+						});
+						mapRef.current.addLayer({
+							id: routeSourceId,
+							type: "line",
+							source: routeSourceId,
+							layout: {
+								"line-join": "round",
+								"line-cap": "round",
+							},
+							paint: {
+								"line-color": "#0074D9",
+								"line-width": 5,
+								"line-opacity": 0.8,
+							},
+						});
+					}
+
+					// Calculate ETA to next stop and final stop
+					if (data.routes[0].duration) {
+						const durationSeconds = data.routes[0].duration;
+						// Calculate ETA for next stop (first stop in stops list)
+						if (stops.length > 0) {
+							const nextStopDuration = data.routes[0].legs[0]?.duration || durationSeconds;
+							setEtaNextStop(nextStopDuration);
+							// Check delay against scheduled time for next stop
+							const nextStopScheduled = stops[0]?.time;
+							if (nextStopScheduled) {
+								const now = new Date();
+								const scheduledTime = new Date();
+								const parts = nextStopScheduled.split(":");
+								if (parts.length >= 2) {
+									scheduledTime.setHours(parseInt(parts[0], 10));
+									scheduledTime.setMinutes(parseInt(parts[1], 10));
+									scheduledTime.setSeconds(0);
+									const etaTime = new Date(now.getTime() + nextStopDuration * 1000);
+									setDelayed(etaTime > scheduledTime);
+								} else {
+									setDelayed(false);
+								}
+							} else {
+								setDelayed(false);
+							}
+						}
+						// ETA to final stop (last leg)
+						if (data.routes[0].legs.length > 1) {
+							const finalLegDuration = data.routes[0].legs.reduce(
+								(sum, leg) => sum + leg.duration,
+								0
+							);
+							setEtaFinalStop(finalLegDuration);
+						} else {
+							setEtaFinalStop(durationSeconds);
+						}
+					}
+				}
+			})
+			.catch(() => {
+				setEtaNextStop(null);
+				setEtaFinalStop(null);
+				setDelayed(false);
+			});
+	}, [driverLocation, stops]);
+
+	// Format duration seconds to human readable ETA
+	const formatDuration = (seconds) => {
+		if (seconds == null) return "";
+		const mins = Math.round(seconds / 60);
+		if (mins < 60) return `${mins} min${mins !== 1 ? "s" : ""}`;
+		const hrs = Math.floor(mins / 60);
+		const remMins = mins % 60;
+		return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
 	};
 
-	const handleReachStop = () => {
-		if (currentStopIndex < stops.length - 1) {
-			setCurrentStopIndex((prev) => prev + 1);
-			setStatus("Ongoing");
-		} else {
-			setStatus("Completed");
-		}
-	};
-
-	const handleStartReturnJourney = () => {
-		setIsReturn(true);
-		setStatus("Return Ongoing");
-		setCurrentStopIndex(0);
-		// Reverse the stops for return journey
-		setStops((prev) => [...prev].reverse());
-	};
-
-	const handleReachReturnStop = () => {
-		if (currentStopIndex < stops.length - 1) {
-			setCurrentStopIndex((prev) => prev + 1);
-			setStatus("Return Ongoing");
-		} else {
-			setStatus("Return Completed");
-		}
-	};
-
-	// Loading state
 	if (loading) {
 		return (
-			<div className="flex items-center justify-center p-8">
-				<div className="text-center">Loading bus information...</div>
+			<div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg border border-gray-200 p-6 animate-pulse">
+				<div className="flex items-center justify-between mb-4">
+					<div className="h-6 bg-gray-300 rounded w-1/3"></div>
+					<div className="h-6 bg-gray-300 rounded w-20"></div>
+				</div>
+				<div className="flex flex-col sm:flex-row sm:space-x-6">
+					<div className="flex-1 space-y-4">
+						<div className="h-4 bg-gray-300 rounded w-3/4"></div>
+						<div className="h-4 bg-gray-300 rounded w-2/3"></div>
+						<div className="h-4 bg-gray-300 rounded w-1/2"></div>
+					</div>
+					<div className="flex-1 space-y-4 mt-4 sm:mt-0">
+						<div className="h-4 bg-gray-300 rounded w-full"></div>
+						<div className="h-4 bg-gray-300 rounded w-5/6"></div>
+						<div className="h-4 bg-gray-300 rounded w-2/3"></div>
+					</div>
+				</div>
+				<div className="mt-6 h-40 bg-gray-300 rounded-lg"></div>
 			</div>
 		);
 	}
 
-	// Error state
 	if (error) {
 		return (
 			<div className="flex items-center justify-center p-8">
@@ -353,198 +318,224 @@ const BusInfo = ({ busId }) => {
 		);
 	}
 
-	// No bus data
 	if (!bus) {
 		return (
 			<div className="flex items-center justify-center p-8">
-				<div className="text-center">No bus data found</div>
+				<div className="text-center text-gray-700">No bus data found</div>
 			</div>
 		);
 	}
 
-	// Compute journey status
-	let journeyStatusLabel = "";
-	const currentStopName = stops[currentStopIndex]?.name || "";
-	const nextStopName = stops[currentStopIndex + 1]?.name || "";
-	const endStopName = stops[stops.length - 1]?.name || "";
+	const finalStopName = stops.length > 0 ? stops[stops.length - 1].name : "N/A";
+	const nextStopName = stops.length > 0 ? stops[0].name : "N/A";
 
-	switch (status) {
-		case "Not Started":
-			journeyStatusLabel = `Ready to start from ${stops[0]?.name || ""}`;
-			break;
-		case "Ongoing":
-			journeyStatusLabel = `En route to ${nextStopName || endStopName}`;
-			break;
-		case "Reached":
-			journeyStatusLabel = `Arrived at ${currentStopName}`;
-			break;
-		case "Completed":
-			journeyStatusLabel = "Journey completed";
-			break;
-		case "Return Ongoing":
-			journeyStatusLabel = `Return journey to ${
-				nextStopName || endStopName
-			}`;
-			break;
-		case "Return Completed":
-			journeyStatusLabel = "Return journey completed";
-			break;
-		default:
-			journeyStatusLabel = "Unknown status";
-	}
+	// Status badge color
+	const statusColors = {
+		"Not Started": "bg-gray-300 text-gray-800",
+		Ongoing: "bg-blue-500 text-white",
+		Reached: "bg-green-500 text-white",
+		Completed: "bg-gray-600 text-white",
+		"Return Ongoing": "bg-purple-500 text-white",
+		"Return Completed": "bg-purple-800 text-white",
+	};
+	const busStatus = bus.status.current || "Not Defined";
+	const badgeColor = statusColors[busStatus] || "bg-gray-300 text-gray-800";
 
-	// Calculate ETA to next stop
-	let ETA = "";
-	if (
-		driverLocation &&
-		currentStopIndex < stops.length &&
-		stops[currentStopIndex]
-	) {
-		const currentStop = stops[currentStopIndex];
-		if (currentStop.lat && currentStop.lng) {
-			const dist = haversineDistance(
-				driverLocation.lat,
-				driverLocation.lng,
-				currentStop.lat,
-				currentStop.lng
-			);
-			ETA = `${Math.round(dist)}m away`;
-		}
-	}
+	// Progress bar percentage for capacity
+	const capacityPercent = bus.capacity
+		? Math.min(100, Math.round(((bus.currLoad || 0) / bus.capacity) * 100))
+		: 0;
 
+	// Times
+	const startTime = bus.startTime || "N/A";
+	const endTime = bus.endTime || "N/A";
 	const returnJourneyEnabled = bus.returnJourney?.enabled || false;
+	const returnJourneyStart = bus.returnJourney?.startTime || "N/A";
 
 	return (
-		<div className="border rounded-lg overflow-hidden shadow-lg bg-white text-black">
-			<div className="flex">
-				{/* Left panel: Bus Details */}
-				<div className="flex flex-col gap-3 p-6 border-r min-w-[280px] bg-gray-50">
-					<div className="border-b pb-3">
-						<h2 className="text-2xl font-bold text-blue-600">
-							{bus.busNo}
-						</h2>
-						<p className="text-lg font-medium text-gray-700">
-							{bus.busName}
-						</p>
+		<div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+			{/* Summary Header - clickable to toggle */}
+			<div
+				className="flex items-center justify-between cursor-pointer p-4 sm:p-6"
+				onClick={() => setExpanded((e) => !e)}
+				aria-expanded={expanded}
+				role="button"
+				tabIndex={0}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") setExpanded((ex) => !ex);
+				}}>
+				<div className="flex flex-col sm:flex-row sm:items-center sm:space-x-6 w-full">
+					<div className="flex flex-col sm:flex-row sm:items-center sm:space-x-3 flex-grow">
+						<h3 className="text-xl font-semibold text-blue-700 truncate">
+							{bus.busName} ({bus.busNo})
+						</h3>
+						<span
+							className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ml-0 sm:ml-4 ${badgeColor} whitespace-nowrap select-none`}>
+							{busStatus}
+						</span>
 					</div>
-
-					<div className="space-y-2 text-sm">
-						<p>
-							<span className="font-medium">Driver:</span>{" "}
-							{bus.driverName}
-						</p>
-						<p>
-							<span className="font-medium">Capacity:</span>{" "}
-							{bus.currLoad || 0} / {bus.capacity} passengers
-						</p>
-						<p>
-							<span className="font-medium">Route:</span>{" "}
-							{stops[0]?.name} → {endStopName}
-						</p>
+					<div className="flex flex-col sm:flex-row sm:items-center sm:space-x-6 mt-2 sm:mt-0 text-sm text-gray-600 min-w-[280px]">
+						<div className="truncate">
+							<span className="font-semibold">Next Stop:</span>{" "}
+							{nextStopName}
+						</div>
+						<div className="truncate">
+							<span className="font-semibold">ETA:</span>{" "}
+							{etaNextStop ? formatDuration(etaNextStop) : "N/A"}
+							{delayed && (
+								<span className="ml-1 text-red-600 font-bold" title="Delayed">
+									&#9888;
+								</span>
+							)}
+						</div>
+						<div className="truncate">
+							<span className="font-semibold">Final Destination:</span>{" "}
+							{finalStopName}
+						</div>
 					</div>
+				</div>
+				<div className="ml-4 text-gray-400 select-none">
+					{expanded ? (
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							className="h-6 w-6"
+							fill="none"
+							viewBox="0 0 24 24"
+							stroke="currentColor"
+							strokeWidth={2}>
+							<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					) : (
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							className="h-6 w-6"
+							fill="none"
+							viewBox="0 0 24 24"
+							stroke="currentColor"
+							strokeWidth={2}>
+							<path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+						</svg>
+					)}
+				</div>
+			</div>
 
-					<div className="border-t pt-3 space-y-2 text-xs text-gray-600">
-						<p>
-							<span className="font-medium">Status:</span>{" "}
-							{journeyStatusLabel}
-						</p>
-						<p>
-							<span className="font-medium">Current Stop:</span>{" "}
-							{currentStopName || "Not started"}
-						</p>
-						{ETA && (
+			{/* Expandable content */}
+			<div
+				className={`transition-all duration-500 ease-in-out overflow-hidden px-6 sm:px-8 ${
+					expanded ? "max-h-[1500px] py-6" : "max-h-0 py-0"
+				}`}>
+				<div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+					{/* Left panel: Details */}
+					<div className="space-y-4">
+						<div>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">Driver Info</h4>
 							<p>
-								<span className="font-medium">Distance:</span>{" "}
-								{ETA}
+								<span className="font-medium">Name:</span> {bus.driverName || "N/A"}
 							</p>
-						)}
-						<p>
-							<span className="font-medium">Last Updated:</span>{" "}
-							{lastUpdated
-								? lastUpdated.toLocaleTimeString()
-								: "No GPS signal"}
-						</p>
-					</div>
-				</div>
-
-				{/* Middle panel: Journey Controls */}
-				<div className="flex flex-col items-center justify-center px-8 py-6 gap-4 min-w-[200px]">
-					<div className="text-center">
-						<div className="text-lg font-semibold mb-2">
-							{status.replace(/([A-Z])/g, " $1").trim()}
 						</div>
-						<div className="text-sm text-gray-600">
-							{journeyStatusLabel}
+
+						<div>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">Capacity</h4>
+							<div className="w-full bg-gray-200 rounded-full h-5 overflow-hidden">
+								<div
+									className="h-5 bg-green-500 transition-all duration-300"
+									style={{ width: `${capacityPercent}%` }}
+									aria-valuenow={capacityPercent}
+									aria-valuemin="0"
+									aria-valuemax="100"
+									role="progressbar"
+									aria-label="Bus capacity usage"
+								/>
+							</div>
+							<p className="text-sm text-gray-700 mt-1">
+								{bus.currLoad || 0} / {bus.capacity} passengers
+							</p>
+						</div>
+
+						<div>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">Journey Times</h4>
+							<p>
+								<span className="font-medium">Start Time:</span> {startTime}
+							</p>
+							<p>
+								<span className="font-medium">End Time:</span> {endTime}
+							</p>
+							<p>
+								<span className="font-medium">Last GPS Update:</span>{" "}
+								{lastUpdated ? lastUpdated.toLocaleTimeString() : "No GPS signal"}
+							</p>
+						</div>
+
+						{returnJourneyEnabled && (
+							<div>
+								<h4 className="text-lg font-semibold text-gray-800 mb-2">Return Journey</h4>
+								<p>
+									<span className="font-medium">Enabled:</span> Yes
+								</p>
+								<p>
+									<span className="font-medium">Start Time:</span> {returnJourneyStart}
+								</p>
+							</div>
+						)}
+					</div>
+
+					{/* Middle panel: Stops and ETA */}
+					<div className="md:col-span-1 space-y-4">
+						<h4 className="text-lg font-semibold text-gray-800 mb-2">Stops & ETA</h4>
+						<div className="overflow-y-auto max-h-72 border border-gray-200 rounded-md p-3 bg-gray-50">
+							{stops.length === 0 && (
+								<p className="text-gray-600 text-sm">No stops available.</p>
+							)}
+							{stops.map((stop, idx) => {
+								const isNext = idx === 0;
+								const scheduledTime = stop.time || "N/A";
+								let etaText = "N/A";
+								if (isNext && etaNextStop != null) etaText = formatDuration(etaNextStop);
+								return (
+									<div
+										key={stop.id}
+										className={`flex justify-between items-center py-1 border-b last:border-b-0 ${
+											isNext ? "bg-blue-100 font-semibold" : ""
+										}`}>
+										<div className="truncate">{stop.name}</div>
+										<div className="text-xs text-gray-600 text-right min-w-[70px]">
+											<span className="block">Sched: {scheduledTime}</span>
+											{isNext && (
+												<span
+													className={`block ${
+														delayed ? "text-red-600 font-bold" : "text-green-700"
+													}`}>
+													ETA: {etaText}
+												</span>
+											)}
+										</div>
+									</div>
+								);
+							})}
 						</div>
 					</div>
 
-					<div className="space-y-3">
-						{status === "Not Started" && (
-							<button
-								className="bg-green-500 hover:bg-green-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
-								onClick={handleStartJourney}>
-								Start Journey
-							</button>
-						)}
-
-						{status === "Reached" && !isReturn && (
-							<button
-								className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
-								onClick={handleReachStop}>
-								Continue to Next Stop
-							</button>
-						)}
-
-						{status === "Completed" &&
-							returnJourneyEnabled &&
-							!isReturn && (
-								<button
-									className="bg-purple-500 hover:bg-purple-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
-									onClick={handleStartReturnJourney}>
-									Start Return Journey
-								</button>
-							)}
-
-						{status === "Reached" && isReturn && (
-							<button
-								className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
-								onClick={handleReachReturnStop}>
-								Continue Return Journey
-							</button>
-						)}
-					</div>
-				</div>
-
-				{/* Right panel: Map */}
-				<div
-					className="flex-1 relative"
-					style={{ minWidth: "400px", minHeight: "400px" }}>
-					<div
-						ref={mapContainer}
-						className="w-full h-full"
-						style={{ minHeight: "400px" }}
-					/>
-
-					{/* Map overlay with stop info */}
-					<div className="absolute top-4 right-4 bg-white bg-opacity-95 p-3 rounded-lg shadow-md text-xs max-w-xs">
-						<div className="space-y-1">
+					{/* Right panel: Map */}
+					<div className="md:col-span-1 rounded-lg overflow-hidden border border-gray-300 min-h-[300px]">
+						<div
+							ref={mapContainer}
+							className="w-full h-[300px]"
+							aria-label="Bus route map"
+						/>
+						<div className="p-3 bg-gray-50 text-sm text-gray-700">
 							<div>
-								<strong>Next Stop:</strong>{" "}
-								{nextStopName || endStopName || "None"}
+								<span className="font-semibold">Next Stop ETA:</span>{" "}
+								{etaNextStop ? formatDuration(etaNextStop) : "N/A"}
+								{delayed && (
+									<span className="ml-1 text-red-600 font-bold" title="Delayed">
+										&#9888;
+									</span>
+								)}
 							</div>
-							{ETA && (
-								<div>
-									<strong>Distance:</strong> {ETA}
-								</div>
-							)}
 							<div>
-								<strong>Final Stop:</strong> {endStopName}
+								<span className="font-semibold">Final Destination ETA:</span>{" "}
+								{etaFinalStop ? formatDuration(etaFinalStop) : "N/A"}
 							</div>
-							{driverLocation && (
-								<div className="text-green-600">
-									<strong>GPS:</strong> Active
-								</div>
-							)}
 						</div>
 					</div>
 				</div>
