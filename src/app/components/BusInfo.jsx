@@ -3,7 +3,6 @@ import mapboxgl from "mapbox-gl";
 import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-
 const BusInfo = ({ busId }) => {
 	const [bus, setBus] = useState(null);
 	const [stops, setStops] = useState([]);
@@ -164,9 +163,9 @@ const BusInfo = ({ busId }) => {
 		// Fit map bounds to stops and driver location
 		const bounds = new mapboxgl.LngLatBounds();
 		stops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
-		if (driverLocation) bounds.extend([driverLocation.lng, driverLocation.lat]);
+		if (driverLocation)
+			bounds.extend([driverLocation.lng, driverLocation.lat]);
 		mapRef.current.fitBounds(bounds, { padding: 50 });
-
 	}, [bus, stops, driverLocation, lastUpdated]);
 
 	// Fetch and draw route using Mapbox Directions API
@@ -235,7 +234,9 @@ const BusInfo = ({ busId }) => {
 						const durationSeconds = data.routes[0].duration;
 						// Calculate ETA for next stop (first stop in stops list)
 						if (stops.length > 0) {
-							const nextStopDuration = data.routes[0].legs[0]?.duration || durationSeconds;
+							const nextStopDuration =
+								data.routes[0].legs[0]?.duration ||
+								durationSeconds;
 							setEtaNextStop(nextStopDuration);
 							// Check delay against scheduled time for next stop
 							const nextStopScheduled = stops[0]?.time;
@@ -244,10 +245,16 @@ const BusInfo = ({ busId }) => {
 								const scheduledTime = new Date();
 								const parts = nextStopScheduled.split(":");
 								if (parts.length >= 2) {
-									scheduledTime.setHours(parseInt(parts[0], 10));
-									scheduledTime.setMinutes(parseInt(parts[1], 10));
+									scheduledTime.setHours(
+										parseInt(parts[0], 10)
+									);
+									scheduledTime.setMinutes(
+										parseInt(parts[1], 10)
+									);
 									scheduledTime.setSeconds(0);
-									const etaTime = new Date(now.getTime() + nextStopDuration * 1000);
+									const etaTime = new Date(
+										now.getTime() + nextStopDuration * 1000
+									);
 									setDelayed(etaTime > scheduledTime);
 								} else {
 									setDelayed(false);
@@ -321,12 +328,15 @@ const BusInfo = ({ busId }) => {
 	if (!bus) {
 		return (
 			<div className="flex items-center justify-center p-8">
-				<div className="text-center text-gray-700">No bus data found</div>
+				<div className="text-center text-gray-700">
+					No bus data found
+				</div>
 			</div>
 		);
 	}
 
-	const finalStopName = stops.length > 0 ? stops[stops.length - 1].name : "N/A";
+	const finalStopName =
+		stops.length > 0 ? stops[stops.length - 1].name : "N/A";
 	const nextStopName = stops.length > 0 ? stops[0].name : "N/A";
 
 	// Status badge color
@@ -362,7 +372,8 @@ const BusInfo = ({ busId }) => {
 				role="button"
 				tabIndex={0}
 				onKeyDown={(e) => {
-					if (e.key === "Enter" || e.key === " ") setExpanded((ex) => !ex);
+					if (e.key === "Enter" || e.key === " ")
+						setExpanded((ex) => !ex);
 				}}>
 				<div className="flex flex-col sm:flex-row sm:items-center sm:space-x-6 w-full">
 					<div className="flex flex-col sm:flex-row sm:items-center sm:space-x-3 flex-grow">
@@ -383,13 +394,17 @@ const BusInfo = ({ busId }) => {
 							<span className="font-semibold">ETA:</span>{" "}
 							{etaNextStop ? formatDuration(etaNextStop) : "N/A"}
 							{delayed && (
-								<span className="ml-1 text-red-600 font-bold" title="Delayed">
+								<span
+									className="ml-1 text-red-600 font-bold"
+									title="Delayed">
 									&#9888;
 								</span>
 							)}
 						</div>
 						<div className="truncate">
-							<span className="font-semibold">Final Destination:</span>{" "}
+							<span className="font-semibold">
+								Final Destination:
+							</span>{" "}
 							{finalStopName}
 						</div>
 					</div>
@@ -403,7 +418,11 @@ const BusInfo = ({ busId }) => {
 							viewBox="0 0 24 24"
 							stroke="currentColor"
 							strokeWidth={2}>
-							<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+							<path
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								d="M6 18L18 6M6 6l12 12"
+							/>
 						</svg>
 					) : (
 						<svg
@@ -413,7 +432,11 @@ const BusInfo = ({ busId }) => {
 							viewBox="0 0 24 24"
 							stroke="currentColor"
 							strokeWidth={2}>
-							<path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+							<path
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								d="M12 4v16m8-8H4"
+							/>
 						</svg>
 					)}
 				</div>
@@ -428,14 +451,19 @@ const BusInfo = ({ busId }) => {
 					{/* Left panel: Details */}
 					<div className="space-y-4">
 						<div>
-							<h4 className="text-lg font-semibold text-gray-800 mb-2">Driver Info</h4>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">
+								Driver Info
+							</h4>
 							<p>
-								<span className="font-medium">Name:</span> {bus.driverName || "N/A"}
+								<span className="font-medium">Name:</span>{" "}
+								{bus.driverName || "N/A"}
 							</p>
 						</div>
 
 						<div>
-							<h4 className="text-lg font-semibold text-gray-800 mb-2">Capacity</h4>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">
+								Capacity
+							</h4>
 							<div className="w-full bg-gray-200 rounded-full h-5 overflow-hidden">
 								<div
 									className="h-5 bg-green-500 transition-all duration-300"
@@ -453,27 +481,43 @@ const BusInfo = ({ busId }) => {
 						</div>
 
 						<div>
-							<h4 className="text-lg font-semibold text-gray-800 mb-2">Journey Times</h4>
+							<h4 className="text-lg font-semibold text-gray-800 mb-2">
+								Journey Times
+							</h4>
 							<p>
-								<span className="font-medium">Start Time:</span> {startTime}
+								<span className="font-medium">Start Time:</span>{" "}
+								{startTime}
 							</p>
 							<p>
-								<span className="font-medium">End Time:</span> {endTime}
+								<span className="font-medium">End Time:</span>{" "}
+								{endTime}
 							</p>
 							<p>
-								<span className="font-medium">Last GPS Update:</span>{" "}
-								{lastUpdated ? lastUpdated.toLocaleTimeString() : "No GPS signal"}
+								<span className="font-medium">
+									Last GPS Update:
+								</span>{" "}
+								{lastUpdated
+									? lastUpdated.toLocaleTimeString()
+									: "No GPS signal"}
 							</p>
 						</div>
 
 						{returnJourneyEnabled && (
 							<div>
-								<h4 className="text-lg font-semibold text-gray-800 mb-2">Return Journey</h4>
+								<h4 className="text-lg font-semibold text-gray-800 mb-2">
+									Return Journey
+								</h4>
 								<p>
-									<span className="font-medium">Enabled:</span> Yes
+									<span className="font-medium">
+										Enabled:
+									</span>{" "}
+									Yes
 								</p>
 								<p>
-									<span className="font-medium">Start Time:</span> {returnJourneyStart}
+									<span className="font-medium">
+										Start Time:
+									</span>{" "}
+									{returnJourneyStart}
 								</p>
 							</div>
 						)}
@@ -481,29 +525,42 @@ const BusInfo = ({ busId }) => {
 
 					{/* Middle panel: Stops and ETA */}
 					<div className="md:col-span-1 space-y-4">
-						<h4 className="text-lg font-semibold text-gray-800 mb-2">Stops & ETA</h4>
+						<h4 className="text-lg font-semibold text-gray-800 mb-2">
+							Stops & ETA
+						</h4>
 						<div className="overflow-y-auto max-h-72 border border-gray-200 rounded-md p-3 bg-gray-50">
 							{stops.length === 0 && (
-								<p className="text-gray-600 text-sm">No stops available.</p>
+								<p className="text-gray-600 text-sm">
+									No stops available.
+								</p>
 							)}
 							{stops.map((stop, idx) => {
 								const isNext = idx === 0;
 								const scheduledTime = stop.time || "N/A";
 								let etaText = "N/A";
-								if (isNext && etaNextStop != null) etaText = formatDuration(etaNextStop);
+								if (isNext && etaNextStop != null)
+									etaText = formatDuration(etaNextStop);
 								return (
 									<div
 										key={stop.id}
 										className={`flex justify-between items-center py-1 border-b last:border-b-0 ${
-											isNext ? "bg-blue-100 font-semibold" : ""
+											isNext
+												? "bg-blue-100 font-semibold"
+												: ""
 										}`}>
-										<div className="truncate">{stop.name}</div>
+										<div className="truncate">
+											{stop.name}
+										</div>
 										<div className="text-xs text-gray-600 text-right min-w-[70px]">
-											<span className="block">Sched: {scheduledTime}</span>
+											<span className="block">
+												Sched: {scheduledTime}
+											</span>
 											{isNext && (
 												<span
 													className={`block ${
-														delayed ? "text-red-600 font-bold" : "text-green-700"
+														delayed
+															? "text-red-600 font-bold"
+															: "text-green-700"
 													}`}>
 													ETA: {etaText}
 												</span>
@@ -524,17 +581,27 @@ const BusInfo = ({ busId }) => {
 						/>
 						<div className="p-3 bg-gray-50 text-sm text-gray-700">
 							<div>
-								<span className="font-semibold">Next Stop ETA:</span>{" "}
-								{etaNextStop ? formatDuration(etaNextStop) : "N/A"}
+								<span className="font-semibold">
+									Next Stop ETA:
+								</span>{" "}
+								{etaNextStop
+									? formatDuration(etaNextStop)
+									: "N/A"}
 								{delayed && (
-									<span className="ml-1 text-red-600 font-bold" title="Delayed">
+									<span
+										className="ml-1 text-red-600 font-bold"
+										title="Delayed">
 										&#9888;
 									</span>
 								)}
 							</div>
 							<div>
-								<span className="font-semibold">Final Destination ETA:</span>{" "}
-								{etaFinalStop ? formatDuration(etaFinalStop) : "N/A"}
+								<span className="font-semibold">
+									Final Destination ETA:
+								</span>{" "}
+								{etaFinalStop
+									? formatDuration(etaFinalStop)
+									: "N/A"}
 							</div>
 						</div>
 					</div>
