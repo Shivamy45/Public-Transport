@@ -382,6 +382,8 @@ useEffect(() => {
 							</button>
 						</div>
 					</div>
+					{/* Add margin below the form */}
+					<div className="mt-26"></div>
 				</div>
 
 				{/* Pickup Map Modal */}

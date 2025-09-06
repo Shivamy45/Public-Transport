@@ -44,8 +44,8 @@ const page = () => {
 
 				// Try to get from query params first
 				if (searchParams) {
-					pickupStopId = searchParams.get("pickup");
-					dropStopId = searchParams.get("drop");
+					pickupStopId = searchParams.get("pickupId"); // <-- fix here
+					dropStopId = searchParams.get("dropId");     // <-- fix here
 				}
 
 				// If not in query params, try localStorage
