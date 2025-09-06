@@ -11,6 +11,7 @@ import {
 	getDocs,
 	doc,
 	updateDoc,
+	setDoc,
 	arrayUnion,
 } from "firebase/firestore";
 import mapboxgl from "mapbox-gl";
@@ -667,7 +668,7 @@ const AddBus = ({ onSuccess }) => {
 				} else {
 					// Update buses array for existing stop
 					const stopDocRef = doc(db, "stops", stopDocId);
-					await updateDoc(stopDocRef, {
+					await setDoc(stopDocRef, {
 						buses: arrayUnion(busDocId),
 					});
 				}
