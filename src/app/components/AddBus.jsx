@@ -12,6 +12,7 @@ import {
 	doc,
 	updateDoc,
 	arrayUnion,
+	setDoc,
 } from "firebase/firestore";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -67,9 +68,87 @@ const AddBus = ({ onSuccess }) => {
 		};
 	};
 
-	const handleMoveStop = (stopId, direction) => {
+	// Helper function to add minutes to a time string
+	const addMinutesToTime = (timeStr, minutes) => {
+		const [hours, mins] = timeStr.split(":").map(Number);
+		const totalMinutes = hours * 60 + mins + minutes;
+		const newHours = Math.floor(totalMinutes / 60);
+		const newMins = totalMinutes % 60;
+		return `${newHours.toString().padStart(2, "0")}:${newMins
+			.toString()
+			.padStart(2, "0")}`;
+	};
+
+	// Helper function to calculate time difference in minutes
+	const getTimeDifferenceInMinutes = (startTime, endTime) => {
+		const [startH, startM] = startTime.split(":").map(Number);
+		const [endH, endM] = endTime.split(":").map(Number);
+		return endH * 60 + endM - (startH * 60 + startM);
+	};
+
+	// Generate return journey stops
+	const generateReturnJourney = (forwardStops, returnStartTime) => {
+		if (!forwardStops || forwardStops.length < 2) return [];
+
+		// Reverse the stops array
+		const reversedStops = [...forwardStops].reverse();
+
+		// Calculate intervals from forward journey
+		const intervals = [];
+		for (let i = 0; i < forwardStops.length - 1; i++) {
+			const currentTime = forwardStops[i].stopTime;
+			const nextTime = forwardStops[i + 1].stopTime;
+			const interval = getTimeDifferenceInMinutes(currentTime, nextTime);
+			intervals.push(interval);
+		}
+
+		// Generate return journey stops
+		const returnStops = [];
+		let currentTime = returnStartTime;
+		let currentDayOffset = 0;
+
+		for (let i = 0; i < reversedStops.length; i++) {
+			const stop = reversedStops[i];
+
+			// Add the stop with current time and day offset
+			returnStops.push({
+				stopRef: stop.stopRef,
+				stopTime: currentTime,
+				...(currentDayOffset > 0
+					? { dayOffset: currentDayOffset }
+					: {}),
+			});
+
+			// Calculate next stop time if not the last stop
+			if (i < reversedStops.length - 1) {
+				const intervalIndex = intervals.length - 1 - i; // Reverse the interval index
+				const interval = intervals[intervalIndex] || 0;
+				const nextTime = addMinutesToTime(currentTime, interval);
+
+				// Check if we crossed midnight
+				const [currentH, currentM] = currentTime.split(":").map(Number);
+				const [nextH, nextM] = nextTime.split(":").map(Number);
+
+				if (
+					nextH < currentH ||
+					(nextH === currentH && nextM < currentM)
+				) {
+					// Crossed midnight, increment day offset
+					currentDayOffset++;
+				}
+
+				currentTime = nextTime;
+			}
+		}
+
+		return returnStops;
+	};
+
+	const handleMoveStop = (tempStopId, direction) => {
 		setStops((prevStops) => {
-			const index = prevStops.findIndex((s) => s.stopId === stopId);
+			const index = prevStops.findIndex(
+				(s) => s.tempStopId === tempStopId
+			);
 			if (index === -1) return prevStops;
 			const newStops = [...prevStops];
 			const [removed] = newStops.splice(index, 1);
@@ -82,8 +161,10 @@ const AddBus = ({ onSuccess }) => {
 		});
 	};
 
-	const handleRemoveStop = (stopId) => {
-		setStops((prevStops) => prevStops.filter((s) => s.stopId !== stopId));
+	const handleRemoveStop = (tempStopId) => {
+		setStops((prevStops) =>
+			prevStops.filter((s) => s.tempStopId !== tempStopId)
+		);
 	};
 
 	const updateMapWithStops = async () => {
@@ -202,15 +283,14 @@ const AddBus = ({ onSuccess }) => {
 		}
 	}, []);
 
-
 	//Fetch all stops from firestore
 	useEffect(() => {
 		async function fetchStops() {
 			try {
 				const querySnapshot = await getDocs(collection(db, "stops"));
 				const stopsData = querySnapshot.docs.map((doc) => ({
-					stopId: doc.id,
-					...doc.data(),
+					stopId: doc.id, // Use document ID as stopId
+					...doc.data(), // { stopName, lat, lng, buses: [] }
 				}));
 				setAllStops(stopsData);
 			} catch (err) {
@@ -310,7 +390,13 @@ const AddBus = ({ onSuccess }) => {
 		if (allStops.length > 0 && mapRef.current) {
 			allStops.forEach((stop) => {
 				// Show green, slightly larger marker if stop is in allStops but not in current route
-				const isInRoute = stops.some((s) => s.stopId === stop.stopId);
+				const isInRoute = stops.some(
+					(s) =>
+						s.stopName &&
+						stop.stopName &&
+						s.stopName.trim().toLowerCase() ===
+							stop.stopName.trim().toLowerCase()
+				);
 				const markerEl = document.createElement("div");
 				if (!isInRoute) {
 					// Green, larger marker for available stops not in route
@@ -421,7 +507,8 @@ const AddBus = ({ onSuccess }) => {
 		}
 
 		try {
-			let stopId = `stop_${Date.now()}_${Math.random()
+			// Generate temporary ID for form state
+			const tempStopId = `temp_${Date.now()}_${Math.random()
 				.toString(36)
 				.substr(2, 9)}`;
 			let lat = null;
@@ -430,11 +517,12 @@ const AddBus = ({ onSuccess }) => {
 			// Check if stop exists in allStops by name
 			const match = allStops.find(
 				(s) =>
+					s.stopName &&
+					stopPlace &&
 					s.stopName.trim().toLowerCase() ===
-					stopPlace.trim().toLowerCase()
+						stopPlace.trim().toLowerCase()
 			);
 			if (match) {
-				stopId = match.stopId;
 				lat = match.lat;
 				lng = match.lng;
 			} else if (stopPlace) {
@@ -454,10 +542,10 @@ const AddBus = ({ onSuccess }) => {
 			// Prevent duplicate stops
 			const alreadyAdded = stops.some(
 				(s) =>
-					(s.stopId === stopId && match) ||
-					(!match &&
-						s.stopName.trim().toLowerCase() ===
-							stopPlace.trim().toLowerCase())
+					s.stopName &&
+					stopPlace &&
+					s.stopName.trim().toLowerCase() ===
+						stopPlace.trim().toLowerCase()
 			);
 			if (alreadyAdded) {
 				alert("This stop is already added to the route.");
@@ -493,8 +581,9 @@ const AddBus = ({ onSuccess }) => {
 				}
 			}
 
+			// Form state: temporary stop with all data
 			const newStop = {
-				stopId,
+				tempStopId, // Temporary ID for form state
 				stopName: stopPlace.trim(),
 				stopTime,
 				dayOffset,
@@ -570,23 +659,39 @@ const AddBus = ({ onSuccess }) => {
 				return;
 			}
 
-			// Only store stopId, stopTime, dayOffset in the bus document
+			// Convert form stops to bus stops with stopRef (will be set after stop creation)
 			const busStops = stops.map((s) => ({
-				stopId: s.stopId,
+				stopRef: null, // Will be set after stop creation
 				stopTime: s.stopTime,
 				...(s.dayOffset ? { dayOffset: s.dayOffset } : {}),
 			}));
+
+			// Generate return journey if enabled
+			let busStopsReturn = null;
+			if (returnJourneyEnabled && returnStartTime) {
+				// Create temporary stops with stopRef for return journey generation
+				const tempStopsForReturn = stops.map((s) => ({
+					stopRef: null, // Will be set after stop creation
+					stopTime: s.stopTime,
+					...(s.dayOffset ? { dayOffset: s.dayOffset } : {}),
+				}));
+				busStopsReturn = generateReturnJourney(
+					tempStopsForReturn,
+					returnStartTime
+				);
+			}
 
 			const busPayload = {
 				busNo: normalizedBusNo,
 				busName: busName.trim(),
 				driverName: driverName.trim(),
 				capacity: parseInt(capacity),
-				stops: busStops,
-				...(returnJourneyEnabled
+				stops: busStops, // Will be updated with stopRefs after stop creation
+				...(returnJourneyEnabled && busStopsReturn
 					? {
 							returnJourneyEnabled: true,
 							returnStartTime,
+							stopsReturn: busStopsReturn, // Will be updated with stopRefs after stop creation
 					  }
 					: {
 							returnJourneyEnabled: false,
@@ -598,20 +703,7 @@ const AddBus = ({ onSuccess }) => {
 					currentStopIndex: 0,
 					isReturn: false,
 				},
-				location:
-					stops.length > 0 &&
-					stops[0].lat != null &&
-					stops[0].lng != null
-						? {
-								lat: stops[0].lat,
-								lng: stops[0].lng,
-								lastUpdated: null,
-						  }
-						: {
-								lat: null,
-								lng: null,
-								lastUpdated: null,
-						  },
+				// No location tracking in bus document
 				createdAt: serverTimestamp(),
 				createdBy: currentUser.email,
 			};
@@ -633,31 +725,51 @@ const AddBus = ({ onSuccess }) => {
 				});
 			}
 
-			// 🔑 Sync stops collection
-			for (const stop of stops) {
-				let stopDocId = stop.stopId;
+			// Create or overwrite tracker document for this bus after user buses are updated
+			// Use first stop's coordinates if available
+			const firstStop = stops && stops.length > 0 ? stops[0] : null;
+			if (
+				firstStop &&
+				typeof firstStop.lng === "number" &&
+				typeof firstStop.lat === "number"
+			) {
+				await setDoc(doc(db, "tracker", busDocId), {
+					busId: busDocId,
+					location: {
+						type: "Point",
+						coordinates: [firstStop.lng, firstStop.lat],
+					},
+					speed: 30,
+					timestamp: serverTimestamp(),
+				});
+			}
+
+			// 🔑 Sync stops collection and update bus with stopRefs
+			const updatedBusStops = [];
+			for (let i = 0; i < stops.length; i++) {
+				const stop = stops[i];
+				let stopDocId = null;
 				let stopExists = false;
-				// Check if stop exists in Firestore (by stopId)
-				const stopMatch = allStops.find((s) => s.stopId === stop.stopId);
-				if (stopMatch) {
-					stopExists = true;
-				} else {
-					// Try by stopName (case-insensitive)
-					const byName = allStops.find(
-						(s) =>
-							s.stopName.trim().toLowerCase() ===
+
+				// Check if stop exists in Firestore by name (case-insensitive)
+				const existingStop = allStops.find(
+					(s) =>
+						s.stopName &&
+						stop.stopName &&
+						s.stopName.trim().toLowerCase() ===
 							stop.stopName.trim().toLowerCase()
-					);
-					if (byName) {
-						stopExists = true;
-						stopDocId = byName.stopId;
-					}
+				);
+
+				if (existingStop) {
+					// Stop exists, use its document ID
+					stopDocId = existingStop.stopId; // stopId is the document ID
+					stopExists = true;
 				}
+
 				if (!stopExists) {
-					// Add stop to Firestore, include stopId
+					// Create new stop document
 					const stopsRef = collection(db, "stops");
 					const stopDoc = await addDoc(stopsRef, {
-						stopId: stop.stopId,
 						stopName: stop.stopName,
 						lat: stop.lat,
 						lng: stop.lng,
@@ -665,13 +777,70 @@ const AddBus = ({ onSuccess }) => {
 					});
 					stopDocId = stopDoc.id;
 				} else {
-					// Update buses array for existing stop
+					// Update existing stop to add this bus
 					const stopDocRef = doc(db, "stops", stopDocId);
 					await updateDoc(stopDocRef, {
 						buses: arrayUnion(busDocId),
 					});
 				}
+
+				// Update bus stops array with stopRef
+				updatedBusStops[i] = {
+					...busStops[i],
+					stopRef: stopDocId,
+				};
 			}
+
+			// Update return journey stops with stopRefs if enabled
+			let updatedBusStopsReturn = null;
+			if (returnJourneyEnabled && busStopsReturn) {
+				updatedBusStopsReturn = [];
+				for (let i = 0; i < busStopsReturn.length; i++) {
+					const returnStop = busStopsReturn[i];
+					// Find the corresponding stop by matching the original stop order
+					const originalStopIndex = stops.length - 1 - i; // Reverse index
+					const originalStop = stops[originalStopIndex];
+
+					// Find the stop document ID
+					const existingStop = allStops.find(
+						(s) =>
+							s.stopName &&
+							originalStop.stopName &&
+							s.stopName.trim().toLowerCase() ===
+								originalStop.stopName.trim().toLowerCase()
+					);
+
+					let stopDocId = null;
+					if (existingStop) {
+						stopDocId = existingStop.stopId;
+					} else {
+						// This should not happen as we already created all stops above
+						console.warn(
+							`Stop not found for return journey: ${originalStop.stopName}`
+						);
+						continue;
+					}
+
+					// Update return stop with stopRef
+					updatedBusStopsReturn[i] = {
+						...returnStop,
+						stopRef: stopDocId,
+					};
+				}
+			}
+
+			// Update bus document with final stopRefs
+			const busDocRef = doc(db, "buses", busDocId);
+			const updateData = {
+				stops: updatedBusStops,
+			};
+
+			// Only include stopsReturn if return journey is enabled
+			if (returnJourneyEnabled && updatedBusStopsReturn) {
+				updateData.stopsReturn = updatedBusStopsReturn;
+			}
+
+			await updateDoc(busDocRef, updateData);
 
 			setSuccess("Bus added successfully!");
 			setBusNo("");
@@ -955,12 +1124,20 @@ const AddBus = ({ onSuccess }) => {
 													const stopDetails =
 														allStops.find(
 															(s) =>
-																s.stopId ===
-																stop.stopId
+																s.stopName &&
+																stop.stopName &&
+																s.stopName
+																	.trim()
+																	.toLowerCase() ===
+																stop.stopName
+																	.trim()
+																	.toLowerCase()
 														);
 													return (
 														<tr
-															key={stop.stopId}
+															key={
+																stop.tempStopId
+															}
 															className="hover:bg-gray-50">
 															<td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
 																{index + 1}
@@ -993,7 +1170,7 @@ const AddBus = ({ onSuccess }) => {
 																		type="button"
 																		onClick={() =>
 																			handleMoveStop(
-																				stop.stopId,
+																				stop.tempStopId,
 																				"up"
 																			)
 																		}
@@ -1009,7 +1186,7 @@ const AddBus = ({ onSuccess }) => {
 																		type="button"
 																		onClick={() =>
 																			handleMoveStop(
-																				stop.stopId,
+																				stop.tempStopId,
 																				"down"
 																			)
 																		}
@@ -1026,7 +1203,7 @@ const AddBus = ({ onSuccess }) => {
 																		type="button"
 																		onClick={() =>
 																			handleRemoveStop(
-																				stop.stopId
+																				stop.tempStopId
 																			)
 																		}
 																		className="text-red-600 hover:text-red-900"

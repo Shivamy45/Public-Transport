@@ -4,11 +4,13 @@ import {
 	doc,
 	onSnapshot,
 	updateDoc,
+	setDoc,
 	collection,
 	getDoc,
 	getDocs,
 	where,
 	query,
+	serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { MapPin, Clock, Users, Navigation } from "lucide-react";
@@ -82,26 +84,26 @@ const AdminBusCard = ({ busId }) => {
 		if (!busId) return;
 		setLoading(true);
 		setError("");
-		let unsub = null;
+		let unsubBus = null;
 		const cacheKey = `${busId}-${isReturnJourney ? "return" : "forward"}`;
 		const fetchStops = async (busData) => {
 			if (stopsCacheRef.current[cacheKey]) {
 				setStops(stopsCacheRef.current[cacheKey]);
 				return;
 			}
-			if (busData.stops && Array.isArray(busData.stops)) {
+			const journeyStops = isReturnJourney ? busData.stopsReturn : busData.stops;
+			if (journeyStops && Array.isArray(journeyStops)) {
 				const stopDocsSnap = await Promise.all(
-					busData.stops.map(async (s, idx) => {
-						const q = query(
-							collection(db, "stops"),
-							where("stopId", "==", s.stopId)
-						);
-						const qSnap = await getDocs(q);
-						const firstDoc = qSnap.docs[0];
-						const stopData = firstDoc ? firstDoc.data() : {};
+					journeyStops.map(async (s, idx) => {
+						// Use stopRef instead of stopId to query stop documents
+						const stopDoc = await getDoc(doc(db, "stops", s.stopRef));
+						const stopData = stopDoc.exists() ? stopDoc.data() : {};
+						if (!stopDoc.exists()) {
+							console.warn(`Stop not found for ref: ${s.stopRef}`);
+						}
 						return {
-							id: s.stopId,
-							name: stopData.stopName || s.stopName,
+							id: s.stopRef, // Use stopRef as id
+							name: stopData.stopName || "Unknown Stop",
 							lat: stopData.lat || 0,
 							lng: stopData.lng || 0,
 							stopNo: idx + 1,
@@ -115,7 +117,7 @@ const AdminBusCard = ({ busId }) => {
 				setStops([]);
 			}
 		};
-		unsub = onSnapshot(
+		unsubBus = onSnapshot(
 			doc(db, "buses", busId),
 			async (docSnap) => {
 				if (docSnap.exists()) {
@@ -135,10 +137,66 @@ const AdminBusCard = ({ busId }) => {
 			}
 		);
 		return () => {
-			if (unsub) unsub();
+			if (unsubBus) unsubBus();
 		};
 		// only refetch if busId or isReturnJourney changes
 	}, [busId, isReturnJourney]);
+
+	// ------------------- TRACKER DATA FETCH -------------------
+	// Fetch driver location from tracker collection
+	useEffect(() => {
+		if (!busId) return;
+		
+		const unsubTracker = onSnapshot(
+			doc(db, "tracker", busId),
+			(docSnap) => {
+				if (docSnap.exists()) {
+					const trackerData = docSnap.data();
+					
+					// Extract location from GeoJSON Point format
+					if (trackerData.location && 
+						trackerData.location.type === "Point" && 
+						trackerData.location.coordinates && 
+						trackerData.location.coordinates.length === 2) {
+						
+						const [lng, lat] = trackerData.location.coordinates;
+						
+						// Validate coordinates
+						if (typeof lat === "number" && typeof lng === "number" && 
+							!isNaN(lat) && !isNaN(lng)) {
+							
+							setDriverLocation({ lat, lng });
+							
+							// Convert timestamp to Date
+							if (trackerData.timestamp) {
+								const timestamp = trackerData.timestamp.toDate ? 
+									trackerData.timestamp.toDate() : 
+									new Date(trackerData.timestamp);
+								setLastUpdated(timestamp);
+							} else {
+								setLastUpdated(new Date());
+							}
+						} else {
+							setDriverLocation(null);
+						}
+					} else {
+						setDriverLocation(null);
+					}
+				} else {
+					// No tracker data available
+					setDriverLocation(null);
+				}
+			},
+			(err) => {
+				console.error("Error fetching tracker data:", err);
+				setDriverLocation(null);
+			}
+		);
+
+		return () => {
+			unsubTracker();
+		};
+	}, [busId]);
 
 	// ------------------- DRIVER LOCATION / ETA -------------------
 	// Will on this when wants to use real data
@@ -330,6 +388,10 @@ const AdminBusCard = ({ busId }) => {
 			if (mapRef.current) {
 				mapRef.current.remove();
 				mapRef.current = null;
+			}
+			if (busMarkerRef.current) {
+				busMarkerRef.current.remove();
+				busMarkerRef.current = null;
 			}
 		};
 	}, []);
@@ -525,14 +587,7 @@ const AdminBusCard = ({ busId }) => {
 		};
 	}, [stops]);
 
-	// Set driverLocation to first stop's coordinates once stops are fetched, if driverLocation is null
-	useEffect(() => {
-		if (!driverLocation && stops.length > 0) {
-			setDriverLocation({ lat: stops[0].lat, lng: stops[0].lng });
-		}
-		// Only when stops change and driverLocation is null
-		// eslint-disable-next-line
-	}, [stops]);
+	// driverLocation is now managed by tracker listener
 
 	const toggleJourneyPause = useCallback(() => setIsJourneyPaused((prev) => !prev), []);
 	// Cancel animation frame if journey stopped/unmounted
@@ -597,7 +652,7 @@ const AdminBusCard = ({ busId }) => {
 	}, [driverLocation, stops, currentStopIndex, simulationSpeed, calculateDistance]);
 
 	// ---- Firestore real-time update ----
-	// Throttle Firestore writes (driverLocation, stop index, times)
+	// Throttle Firestore writes (tracker data and bus status)
 	useEffect(() => {
 		if (!busId) return;
 		let isUnmounted = false;
@@ -610,6 +665,20 @@ const AdminBusCard = ({ busId }) => {
 				const now = Date.now();
 				if (now - lastFirestoreUpdateRef.current < 1800) return; // throttle to once every ~1.8s
 				lastFirestoreUpdateRef.current = now;
+				
+				// Update tracker collection with driver location
+				const trackerRef = doc(db, "tracker", busId);
+				await setDoc(trackerRef, {
+					busId,
+					location: { 
+						type: "Point", 
+						coordinates: [driverLocation.lng, driverLocation.lat] 
+					},
+					speed: simulationSpeed,
+					timestamp: serverTimestamp()
+				}, { merge: true });
+
+				// Update bus document with journey status (no location data)
 				const busRef = doc(db, "buses", busId);
 				let startTimeVal = bus?.startTime;
 				let endTimeVal = bus?.endTime;
@@ -618,12 +687,11 @@ const AdminBusCard = ({ busId }) => {
 					endTimeVal = stops[stops.length - 1]?.time || "";
 				}
 				await updateDoc(busRef, {
-					lastUpdated: new Date(),
-					driverLocation,
-					currentStopIndex,
+					"status.currentStopIndex": currentStopIndex,
 					startTime: startTimeVal,
 					endTime: endTimeVal,
 				});
+				
 				if (!isUnmounted) setLastUpdated(new Date());
 			}
 		};
@@ -633,17 +701,14 @@ const AdminBusCard = ({ busId }) => {
 			clearInterval(interval);
 		};
 		// Only rerun if these change
-	}, [driverLocation, currentStopIndex, stops, busId, bus]);
+	}, [driverLocation, currentStopIndex, stops, busId, bus, simulationSpeed]);
 
 	// ---- Restart Journey ----
 	const handleRestartJourney = useCallback(() => {
 		setIsJourneyStarted(false);
 		setIsJourneyPaused(false);
 		setCurrentStopIndex(0);
-		setDriverLocation({
-			lat: stops[0]?.lat,
-			lng: stops[0]?.lng,
-		});
+		// driverLocation will be set by tracker listener
 		if (simulationIntervalRef.current.frameId) {
 			window.cancelAnimationFrame(simulationIntervalRef.current.frameId);
 			simulationIntervalRef.current.frameId = null;
