@@ -198,6 +198,15 @@ const AdminBusCard = ({ busId }) => {
 		};
 	}, [busId]);
 
+	// ------------------- INITIALIZE DRIVER LOCATION -------------------
+	// Initialize driverLocation to first stop if no tracker data exists
+	useEffect(() => {
+		if (!driverLocation && stops.length > 0) {
+			// Only set initial location if no tracker data is available
+			setDriverLocation({ lat: stops[0].lat, lng: stops[0].lng });
+		}
+	}, [stops, driverLocation]);
+
 	// ------------------- DRIVER LOCATION / ETA -------------------
 	// Will on this when wants to use real data
 	// useEffect(() => {
@@ -382,6 +391,25 @@ const AdminBusCard = ({ busId }) => {
 		}
 	}, [driverLocation, currentStopIndex, isJourneyStarted, stops, updateMapMarkers]);
 
+	// Ensure bus marker shows up once map and driverLocation are ready
+	useEffect(() => {
+		if (!mapRef.current || !driverLocation) return;
+		const updateBusMarker = () => {
+			if (!busMarkerRef.current) {
+				busMarkerRef.current = new mapboxgl.Marker({ color: "#FFD700" })
+					.setLngLat([driverLocation.lng, driverLocation.lat])
+					.addTo(mapRef.current);
+			} else {
+				busMarkerRef.current.setLngLat([driverLocation.lng, driverLocation.lat]);
+			}
+		};
+		if (!mapRef.current.isStyleLoaded()) {
+			mapRef.current.once("styledata", updateBusMarker);
+		} else {
+			updateBusMarker();
+		}
+	}, [driverLocation]);
+
 	// Cleanup map on unmount
 	useEffect(() => {
 		return () => {
@@ -409,8 +437,7 @@ const AdminBusCard = ({ busId }) => {
 		// If we're starting anew, find the closest coord to current driver location or stop
 		if (
 			simulationIntervalRef.current.coordIndex == null ||
-			simulationIntervalRef.current.stopIdx == null ||
-			!isJourneyPaused
+			simulationIntervalRef.current.stopIdx == null
 		) {
 			const getClosestCoordIndex = () => {
 				const target = driverLocation
@@ -489,60 +516,8 @@ const AdminBusCard = ({ busId }) => {
 
 	// Resume journey from where it was paused (at a stop)
 	useEffect(() => {
-		if (
-			isJourneyStarted &&
-			!isJourneyPaused &&
-			currentStopIndex < stops.length
-		) {
-			let routeCoords = routeCoordsRef.current;
-			// Use persisted coordIndex and stopIdx
-			let coordIndex = simulationIntervalRef.current.coordIndex ?? 0;
-			let stopIdx = simulationIntervalRef.current.stopIdx ?? currentStopIndex;
-			const animate = () => {
-				coordIndex = simulationIntervalRef.current.coordIndex ?? 0;
-				stopIdx = simulationIntervalRef.current.stopIdx ?? currentStopIndex;
-				if (isJourneyPaused) {
-					simulationIntervalRef.current.frameId = null;
-					return;
-				}
-				if (coordIndex >= routeCoords.length) {
-					setCurrentStopIndex(stops.length);
-					setDriverLocation({
-						lat: stops[stops.length - 1].lat,
-						lng: stops[stops.length - 1].lng,
-					});
-					return;
-				}
-				const coord = routeCoords[coordIndex];
-				setDriverLocation({ lat: coord[1], lng: coord[0] });
-				if (
-					stopIdx < stops.length &&
-					Math.abs(coord[0] - stops[stopIdx].lng) < 0.0002 &&
-					Math.abs(coord[1] - stops[stopIdx].lat) < 0.0002
-				) {
-					setCurrentStopIndex(stopIdx + 1);
-					stopIdx++;
-					simulationIntervalRef.current.stopIdx = stopIdx;
-					setIsJourneyPaused(true);
-					simulationIntervalRef.current.frameId = null;
-					return;
-				}
-				const nextCoord = routeCoords[coordIndex + 1];
-				if (!nextCoord) return;
-				const distanceKm = calculateDistance(
-					{ lat: coord[1], lng: coord[0] },
-					{ lat: nextCoord[1], lng: nextCoord[0] }
-				);
-				const speed = simulationSpeed;
-				const timeMs = (distanceKm / speed) * 3600 * 1000;
-				coordIndex += 1;
-				simulationIntervalRef.current.coordIndex = coordIndex;
-				simulationIntervalRef.current.frameId = window.requestAnimationFrame(animate);
-			};
-			if (simulationIntervalRef.current.frameId) {
-				window.cancelAnimationFrame(simulationIntervalRef.current.frameId);
-			}
-			simulationIntervalRef.current.frameId = window.requestAnimationFrame(animate);
+		if (isJourneyStarted && !isJourneyPaused && currentStopIndex < stops.length) {
+			startJourney();
 		}
 		return () => {
 			if (simulationIntervalRef.current.frameId) {
@@ -550,7 +525,7 @@ const AdminBusCard = ({ busId }) => {
 				simulationIntervalRef.current.frameId = null;
 			}
 		};
-	}, [isJourneyStarted, isJourneyPaused, currentStopIndex, stops, simulationSpeed, calculateDistance]);
+	}, [isJourneyStarted, isJourneyPaused, currentStopIndex, stops, simulationSpeed, calculateDistance, startJourney]);
 	// Fetch and cache Mapbox route coordinates when stops change, and update route layer once
 	// Fetch and cache Mapbox route coordinates when stops change
 	useEffect(() => {
@@ -708,25 +683,53 @@ const AdminBusCard = ({ busId }) => {
 		setIsJourneyStarted(false);
 		setIsJourneyPaused(false);
 		setCurrentStopIndex(0);
-		// driverLocation will be set by tracker listener
+
+		// Reset driverLocation to first stop if available
+		if (stops.length > 0) {
+			setDriverLocation({ lat: stops[0].lat, lng: stops[0].lng });
+		}
+
+		// Cancel any running animation
 		if (simulationIntervalRef.current.frameId) {
 			window.cancelAnimationFrame(simulationIntervalRef.current.frameId);
 			simulationIntervalRef.current.frameId = null;
 		}
-	}, [stops]);
+
+		// Reset simulation indices
+		simulationIntervalRef.current.coordIndex = null;
+		simulationIntervalRef.current.stopIdx = 0;
+
+		// Clear route coordinates to force refetch
+		routeCoordsRef.current = [];
+
+		// Restart journey after a small delay to allow route refetch
+		setTimeout(() => {
+			startJourney();
+		}, 500);
+	}, [stops, startJourney]);
 
 	const handleReturnJourney = useCallback(() => {
-		setIsReturnJourney(true);
-		// stops will be set by useEffect on busId/isReturnJourney change
-		setCurrentStopIndex(0);
+		// Reset simulation state
 		setIsJourneyStarted(false);
 		setIsJourneyPaused(false);
-		// driverLocation will be set by useEffect on stops change
+		setCurrentStopIndex(0);
+		
+		// Cancel any running animation
 		if (simulationIntervalRef.current.frameId) {
 			window.cancelAnimationFrame(simulationIntervalRef.current.frameId);
 			simulationIntervalRef.current.frameId = null;
 		}
-	}, []);
+		// Reset simulation indices
+		simulationIntervalRef.current.coordIndex = 0;
+		simulationIntervalRef.current.stopIdx = 0;
+		
+		// Switch to return journey - this will trigger useEffect to fetch stopsReturn
+		setIsReturnJourney(true);
+		
+		// Clear stops cache to force refetch
+		const cacheKey = `${busId}-return`;
+		delete stopsCacheRef.current[cacheKey];
+	}, [busId]);
 
 	// ------------------- RENDER -------------------
 	if (loading) return <div className="p-8">Loading...</div>;
@@ -797,11 +800,26 @@ const AdminBusCard = ({ busId }) => {
 								disabled={stops.length === 0}>
 								Restart Journey
 							</button>
-							{currentStopIndex >= stops.length && !isReturnJourney && (
+							{currentStopIndex >= stops.length && !isReturnJourney && bus?.stopsReturn && bus.stopsReturn.length > 0 && (
 								<button
 									onClick={handleReturnJourney}
 									className="px-3 py-2 bg-blue-500 text-white rounded ml-2">
 									Start Return Journey
+								</button>
+							)}
+							{isReturnJourney && (
+								<button
+									onClick={() => {
+										setIsReturnJourney(false);
+										setCurrentStopIndex(0);
+										setIsJourneyStarted(false);
+										setIsJourneyPaused(false);
+										// Clear cache to force refetch forward stops
+										const cacheKey = `${busId}-forward`;
+										delete stopsCacheRef.current[cacheKey];
+									}}
+									className="px-3 py-2 bg-green-500 text-white rounded ml-2">
+									Back to Forward Journey
 								</button>
 							)}
 						</div>
